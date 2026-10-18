@@ -120,7 +120,7 @@ static NSString *JSONValueFor(const uint8_t *buf, size_t len, const char *key) {
 @property (nonatomic, copy) NSString *source;
 @property (nonatomic, strong) NSDate *capturedAt;
 + (instancetype)shared;
-- (void)ingestBytes:(const uint8_t *)buf length:(size_t)len label:(NSString *)label;
+- (void)ingestBytes:(const void *)bytes length:(size_t)len label:(NSString *)label;
 - (void)scanKeychain;
 - (void)scanDefaults;
 - (NSDictionary *)snapshot;
@@ -147,7 +147,8 @@ static NSString *JSONValueFor(const uint8_t *buf, size_t len, const char *key) {
     return s;
 }
 
-- (void)ingestBytes:(const uint8_t *)buf length:(size_t)len label:(NSString *)label {
+- (void)ingestBytes:(const void *)bytes length:(size_t)len label:(NSString *)label {
+    const uint8_t *buf = (const uint8_t *)bytes;
     if (!buf || len < 16 || len > 4 * 1024 * 1024) return;
     BOOL changed = NO;
 
