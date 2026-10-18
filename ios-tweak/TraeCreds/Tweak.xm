@@ -51,12 +51,14 @@ static UIWindow *TraeKeyWindow(void) {
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
             if (![scene isKindOfClass:UIWindowScene.class]) continue;
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            UIWindowScene *ws = (UIWindowScene *)scene;
+            for (UIWindow *w in ws.windows) {
                 if (w.isKeyWindow) return w;
             }
+            if (ws.windows.count > 0) return ws.windows.firstObject;
         }
     }
-    return UIApplication.sharedApplication.keyWindow ?: UIApplication.sharedApplication.windows.firstObject;
+    return nil;
 }
 
 static UIViewController *TraeTopController(void) {

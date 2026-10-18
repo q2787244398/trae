@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = TraeCreds
 TraeCreds_FILES = Tweak.xm
-TraeCreds_CFLAGS = -fobjc-arc
+TraeCreds_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable
 TraeCreds_FRAMEWORKS = UIKit Foundation Security
 
 include $(THEOS_MAKE_PATH)/tweak.mk
