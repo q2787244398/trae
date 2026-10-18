@@ -1,0 +1,7 @@
+{
+    Filter = {
+        Bundles = (
+            "com.stone.solo.cn"
+        );
+    };
+}

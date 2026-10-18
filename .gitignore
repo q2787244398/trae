@@ -1,0 +1,31 @@
+# ---- secrets ----
+.env
+*.env
+!.env.example
+data/
+relay/data/
+relay-admin-password.txt
+relay-api-key.txt
+relay-dsh-key.txt
+logs/
+*.log
+
+# ---- runtime ----
+tools/
+relay-deps/
+relay-venv*/
+__pycache__/
+*.pyc
+
+# ---- build ----
+*.deb
+packages/
+.theos/
+obj/
+*.dylib
+
+# ---- local analysis ----
+ipa-extract/
+*.ipa
+repo.zip
+backups/
