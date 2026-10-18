@@ -1,26 +1,21 @@
-// TraeCreds - capture the Trae iOS (com.stone.solo.cn) login credentials
-// and expose them through an in-app floating panel.
+// TraeCreds - capture Trae iOS (com.stone.solo.cn) login credentials.
 //
-// Interaction:
-//   three-finger long press inside the app -> floating "T" icon
-//   tap the icon                            -> credential panel
-//   tap / long-press a row                  -> copy that value
+// The app uses ByteDance TTNet (Cronet + BoringSSL), NOT NSURLSession, so the
+// previous NSURLSession-only hooks never fired. This version hooks BoringSSL
+// at the plaintext layer and adds a Keychain / NSUserDefaults fallback.
 //
-// Scope: only requests whose host is a Trae host are inspected. Nothing is
-// uploaded anywhere unless you set kRelayBaseURL below. For your own device
-// and your own account only.
+// Interaction: three-finger long press -> floating "T" -> credential panel.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
+#import <substrate.h>
+#import <dlfcn.h>
 
-// Optional: POST captured credentials to your relay. Leave empty to disable.
-// Example: @"https://your-tunnel.trycloudflare.com"
-static NSString *const kRelayBaseURL = @"";
-
+static NSString *const kRelayBaseURL = @"";   // optional: POST creds to relay
 static NSString *const kCredsFile = @"trae-creds.json";
 
-#pragma mark - helpers
+#pragma mark - small helpers
 
 static BOOL TraeHost(NSString *url) {
     if (url.length == 0) return NO;
@@ -52,9 +47,7 @@ static UIWindow *TraeKeyWindow(void) {
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
             if (![scene isKindOfClass:UIWindowScene.class]) continue;
             UIWindowScene *ws = (UIWindowScene *)scene;
-            for (UIWindow *w in ws.windows) {
-                if (w.isKeyWindow) return w;
-            }
+            for (UIWindow *w in ws.windows) if (w.isKeyWindow) return w;
             if (ws.windows.count > 0) return ws.windows.firstObject;
         }
     }
@@ -67,6 +60,56 @@ static UIViewController *TraeTopController(void) {
     return top;
 }
 
+#pragma mark - plaintext scanner
+
+static NSString *JWTFromBytes(const uint8_t *buf, size_t len, size_t *outLen) {
+    if (len < 32) return nil;
+    for (size_t i = 0; i + 3 < len; i++) {
+        if (buf[i] == 'e' && buf[i+1] == 'y' && buf[i+2] == 'J') {
+            size_t j = i;
+            while (j < len && j - i < 4096) {
+                uint8_t c = buf[j];
+                BOOL ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+                if (!ok) break;
+                j++;
+            }
+            size_t n = j - i;
+            if (n > 60) {
+                NSString *s = [[NSString alloc] initWithBytes:buf + i length:n encoding:NSASCIIStringEncoding];
+                if ([s componentsSeparatedByString:@"."].count >= 3) {
+                    if (outLen) *outLen = n;
+                    return s;
+                }
+            }
+            i = j;
+        }
+    }
+    return nil;
+}
+
+// Find  "key" : "value"  (or key=value) inside a byte buffer and return value.
+static NSString *JSONValueFor(const uint8_t *buf, size_t len, const char *key) {
+    size_t klen = strlen(key);
+    if (len < klen + 8) return nil;
+    for (size_t i = 0; i + klen < len; i++) {
+        if (memcmp(buf + i, key, klen) != 0) continue;
+        size_t j = i + klen;
+        while (j < len && (buf[j] == '"' || buf[j] == ' ' || buf[j] == ':' || buf[j] == '=' || buf[j] == '\t')) j++;
+        if (j >= len || buf[j] != '"') continue;
+        j++;
+        size_t start = j;
+        while (j < len && j - start < 2048) {
+            if (buf[j] == '"' || buf[j] == '\n' || buf[j] == '\r') break;
+            j++;
+        }
+        if (j > start + 8) {
+            return [[NSString alloc] initWithBytes:buf + start length:(j - start) encoding:NSUTF8StringEncoding];
+        }
+    }
+    return nil;
+}
+
 #pragma mark - store
 
 @interface TraeCredStore : NSObject
@@ -74,11 +117,12 @@ static UIViewController *TraeTopController(void) {
 @property (nonatomic, copy) NSString *refreshToken;
 @property (nonatomic, copy) NSString *userId;
 @property (nonatomic, copy) NSString *clientId;
-@property (nonatomic, copy) NSString *lastURL;
+@property (nonatomic, copy) NSString *source;
 @property (nonatomic, strong) NSDate *capturedAt;
 + (instancetype)shared;
-- (void)noteRequest:(NSURLRequest *)request;
-- (void)noteResponse:(NSData *)data forURL:(NSString *)url;
+- (void)ingestBytes:(const uint8_t *)buf length:(size_t)len label:(NSString *)label;
+- (void)scanKeychain;
+- (void)scanDefaults;
 - (NSDictionary *)snapshot;
 @end
 
@@ -96,91 +140,94 @@ static UIViewController *TraeTopController(void) {
             if ([d isKindOfClass:NSDictionary.class]) {
                 s.token = d[@"token"]; s.refreshToken = d[@"refreshToken"];
                 s.userId = d[@"userId"]; s.clientId = d[@"clientId"] ?: s.clientId;
+                s.source = d[@"source"];
             }
         }
     });
     return s;
 }
 
-- (void)noteRequest:(NSURLRequest *)request {
-    NSString *url = request.URL.absoluteString ?: @"";
-    NSString *auth = [request valueForHTTPHeaderField:@"Authorization"];
-    NSString *cloudide = [request valueForHTTPHeaderField:@"X-Cloudide-Token"];
-    NSString *jwt = nil;
+- (void)ingestBytes:(const uint8_t *)buf length:(size_t)len label:(NSString *)label {
+    if (!buf || len < 16 || len > 4 * 1024 * 1024) return;
+    BOOL changed = NO;
 
-    if ([auth containsString:@"Cloud-IDE-JWT"]) {
-        jwt = [[auth componentsSeparatedByString:@" "] lastObject];
-    } else if (auth.length > 20 && [auth hasPrefix:@"eyJ"]) {
-        jwt = auth;
-    } else if (cloudide.length > 20) {
-        jwt = cloudide;
+    NSString *jwt = JWTFromBytes(buf, len, NULL);
+    if (jwt && ![jwt isEqualToString:self.token]) {
+        self.token = jwt;
+        self.capturedAt = [NSDate date];
+        self.source = label;
+        changed = YES;
+        NSDictionary *payload = DecodeJWT(jwt);
+        NSDictionary *data = payload[@"data"];
+        if ([data isKindOfClass:NSDictionary.class]) {
+            id uid = data[@"id"] ?: data[@"uid"];
+            if (uid) self.userId = [uid description];
+        }
     }
-    if (jwt.length < 20) return;
 
-    @synchronized (self) {
-        self.lastURL = url;
-        if (![jwt isEqualToString:self.token]) {
-            self.token = jwt;
-            self.capturedAt = [NSDate date];
-            NSDictionary *payload = DecodeJWT(jwt);
-            NSDictionary *data = payload[@"data"];
-            if ([data isKindOfClass:NSDictionary.class]) {
-                id uid = data[@"id"] ?: data[@"uid"];
-                if (uid) self.userId = [uid description];
-            }
-            [self persist];
+    if (!self.refreshToken) {
+        NSString *r = JSONValueFor(buf, len, "\"RefreshToken\"");
+        if (!r) r = JSONValueFor(buf, len, "\"refreshToken\"");
+        if (!r) r = JSONValueFor(buf, len, "\"refresh_token\"");
+        if (r.length > 12) { self.refreshToken = r; changed = YES; }
+    }
+    if (!self.userId) {
+        NSString *u = JSONValueFor(buf, len, "\"UserID\"");
+        if (!u) u = JSONValueFor(buf, len, "\"userId\"");
+        if (u.length > 2) { self.userId = u; changed = YES; }
+    }
+    if (!self.clientId) {
+        NSString *c = JSONValueFor(buf, len, "\"ClientID\"");
+        if (c.length > 2) { self.clientId = c; changed = YES; }
+    }
+
+    if (changed) [self persist];
+}
+
+- (void)scanKeychain {
+    NSDictionary *q = @{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+                         (__bridge id)kSecReturnAttributes: @YES,
+                         (__bridge id)kSecReturnData: @YES,
+                         (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll };
+    CFTypeRef result = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &result) != errSecSuccess || !result) return;
+    NSArray *items = (__bridge_transfer NSArray *)result;
+    for (id item in items) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSData *data = item[(__bridge id)kSecValueData];
+        if (![data isKindOfClass:NSData.class] || data.length == 0) continue;
+        NSString *svc = item[(__bridge id)kSecAttrService] ?: @"";
+        [self ingestBytes:data.bytes length:data.length label:[@"keychain:" stringByAppendingString:svc]];
+        // base64-wrapped payloads
+        NSString *b64 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (b64.length && b64.length < 20000) {
+            NSData *decoded = [[NSData alloc] initWithBase64EncodedString:b64 options:0];
+            if (decoded) [self ingestBytes:decoded.bytes length:decoded.length label:@"keychain-b64"];
         }
     }
 }
 
-- (void)noteResponse:(NSData *)data forURL:(NSString *)url {
-    if (data.length == 0 || data.length > 2 * 1024 * 1024) return;
-    NSString *l = url.lowercaseString;
-    if (!([l containsString:@"token"] || [l containsString:@"auth"] ||
-          [l containsString:@"login"] || [l containsString:@"session"])) return;
-
-    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (![obj isKindOfClass:NSDictionary.class]) return;
-
-    BOOL changed = NO;
-    NSMutableArray *stack = [NSMutableArray arrayWithObject:obj];
-    while (stack.count) {
-        id cur = stack.lastObject;
-        [stack removeLastObject];
-        if ([cur isKindOfClass:NSDictionary.class]) {
-            for (id k in [(NSDictionary *)cur allKeys]) {
-                id v = cur[k];
-                NSString *key = [k description].lowercaseString;
-                if ([v isKindOfClass:NSString.class] && [v length] > 16) {
-                    if ([key isEqualToString:@"refreshtoken"] || [key isEqualToString:@"refresh_token"]) {
-                        if (![v isEqualToString:self.refreshToken]) { self.refreshToken = v; changed = YES; }
-                    } else if (([key isEqualToString:@"token"] || [key isEqualToString:@"accesstoken"] ||
-                                [key isEqualToString:@"cloudidetoken"]) && [v hasPrefix:@"eyJ"]) {
-                        if (!self.token) { self.token = v; changed = YES; }
-                    } else if ([key isEqualToString:@"userid"] || [key isEqualToString:@"uid"]) {
-                        if (!self.userId) { self.userId = v; changed = YES; }
-                    } else if ([key isEqualToString:@"clientid"] || [key isEqualToString:@"client_id"]) {
-                        if (![v isEqualToString:self.clientId]) { self.clientId = v; changed = YES; }
-                    }
-                } else if ([v isKindOfClass:NSDictionary.class] || [v isKindOfClass:NSArray.class]) {
-                    [stack addObject:v];
-                }
-            }
-        } else if ([cur isKindOfClass:NSArray.class]) {
-            [stack addObjectsFromArray:cur];
+- (void)scanDefaults {
+    NSDictionary *d = [NSUserDefaults.standardUserDefaults dictionaryRepresentation];
+    for (NSString *k in d) {
+        id v = d[k];
+        if ([v isKindOfClass:NSString.class]) {
+            NSData *data = [(NSString *)v dataUsingEncoding:NSUTF8StringEncoding];
+            [self ingestBytes:data.bytes length:data.length label:[@"defaults:" stringByAppendingString:k]];
+        } else if ([v isKindOfClass:NSData.class]) {
+            [self ingestBytes:((NSData *)v).bytes length:((NSData *)v).length label:@"defaults-data"];
         }
     }
-    if (changed) [self persist];
 }
 
 - (NSDictionary *)snapshot {
     @synchronized (self) {
-        if (self.token.length < 20) return nil;
+        if (self.token.length < 20 && self.refreshToken.length < 12) return nil;
         return @{ @"token": self.token ?: @"",
                   @"refreshToken": self.refreshToken ?: @"",
                   @"userId": self.userId ?: @"",
                   @"clientId": self.clientId ?: @"ono9krqynydwx5",
-                  @"source": self.lastURL ?: @"" };
+                  @"source": self.source ?: @"" };
     }
 }
 
@@ -189,7 +236,6 @@ static UIViewController *TraeTopController(void) {
     if (!snap) return;
     NSData *json = [NSJSONSerialization dataWithJSONObject:snap options:NSJSONWritingPrettyPrinted error:nil];
     [json writeToFile:DocsPath() atomically:YES];
-    UIPasteboard.generalPasteboard.string = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
 
     if (kRelayBaseURL.length) {
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:
@@ -203,11 +249,30 @@ static UIViewController *TraeTopController(void) {
 
 @end
 
+#pragma mark - SSL hooks (TTNet / Cronet use BoringSSL)
+
+static int (*orig_SSL_write)(void *, const void *, int);
+static int (*orig_SSL_read)(void *, void *, int);
+
+static int hook_SSL_write(void *ssl, const void *buf, int num) {
+    @try { [[TraeCredStore shared] ingestBytes:buf length:num label:@"ssl-write"]; } @catch (NSException *e) {}
+    return orig_SSL_write(ssl, buf, num);
+}
+
+static int hook_SSL_read(void *ssl, void *buf, int num) {
+    int n = orig_SSL_read(ssl, buf, num);
+    if (n > 0) {
+        @try { [[TraeCredStore shared] ingestBytes:buf length:(size_t)n label:@"ssl-read"]; } @catch (NSException *e) {}
+    }
+    return n;
+}
+
 #pragma mark - panel
 
 @interface TraeCredsPanel : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) NSDictionary *creds;
 @property (nonatomic, strong) NSArray<NSString *> *rows;
+@property (nonatomic, strong) UILabel *empty;
 @end
 
 @implementation TraeCredsPanel
@@ -220,65 +285,44 @@ static UIViewController *TraeTopController(void) {
 
     UITableView *tv = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
     tv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    tv.dataSource = self;
-    tv.delegate = self;
+    tv.dataSource = self; tv.delegate = self;
     [self.view addSubview:tv];
 
-    self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStyleDone
-                                        target:self action:@selector(close)];
-    self.navigationItem.leftBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:@"复制全部" style:UIBarButtonItemStylePlain
-                                        target:self action:@selector(copyAll)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStyleDone target:self action:@selector(close)];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"重新扫描" style:UIBarButtonItemStylePlain target:self action:@selector(rescan)];
 }
 
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 
-- (void)copyAll {
-    if (!self.creds) return;
-    NSData *json = [NSJSONSerialization dataWithJSONObject:self.creds options:NSJSONWritingPrettyPrinted error:nil];
-    UIPasteboard.generalPasteboard.string = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
-    [self toast:@"已复制完整 JSON"];
+- (void)rescan {
+    [[TraeCredStore shared] scanKeychain];
+    [[TraeCredStore shared] scanDefaults];
+    self.creds = [[TraeCredStore shared] snapshot] ?: @{};
+    [self reload];
 }
 
-- (void)toast:(NSString *)text {
-    UILabel *l = [UILabel new];
-    l.text = text;
-    l.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-    l.textColor = UIColor.whiteColor;
-    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.8];
-    l.textAlignment = NSTextAlignmentCenter;
-    l.layer.cornerRadius = 10;
-    l.clipsToBounds = YES;
-    [l sizeToFit];
-    CGRect f = l.frame;
-    f.size.width += 32; f.size.height += 18;
-    l.frame = f;
-    l.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height - 90);
-    l.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-    [self.view addSubview:l];
-    [UIView animateWithDuration:0.25 animations:^{ l.alpha = 0; } completion:^(BOOL done) { [l removeFromSuperview]; }];
+- (void)reload {
+    UITableView *tv = nil;
+    for (UIView *v in self.view.subviews) if ([v isKindOfClass:UITableView.class]) tv = (UITableView *)v;
+    [tv reloadData];
 }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return self.rows.count; }
 
 - (NSString *)valueForRow:(NSInteger)row {
-    NSString *key = self.rows[row];
-    id v = self.creds[key];
-    if (!v) return @"（未捕获）";
-    return [v description];
+    id v = self.creds[self.rows[row]];
+    return v ? [v description] : @"（未捕获）";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"c"];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"c"];
-    NSString *key = self.rows[indexPath.row];
     NSString *val = [self valueForRow:indexPath.row];
-    cell.textLabel.text = key;
+    cell.textLabel.text = self.rows[indexPath.row];
     cell.detailTextLabel.text = val.length > 90 ? [[val substringToIndex:90] stringByAppendingString:@"…"] : val;
     cell.detailTextLabel.numberOfLines = 2;
     cell.detailTextLabel.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
-    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.detailTextLabel.textColor = [val isEqualToString:@"（未捕获）"] ? UIColor.systemGrayColor : UIColor.labelColor;
     return cell;
 }
 
@@ -286,7 +330,6 @@ static UIViewController *TraeTopController(void) {
     [tv deselectRowAtIndexPath:indexPath animated:YES];
     NSString *val = [self valueForRow:indexPath.row];
     UIPasteboard.generalPasteboard.string = val;
-    [self toast:[NSString stringWithFormat:@"已复制 %@", self.rows[indexPath.row]]];
 }
 
 @end
@@ -313,7 +356,10 @@ static UIViewController *TraeTopController(void) {
 
 - (void)install {
     UIWindow *win = TraeKeyWindow();
-    if (!win) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self install]; }); return; }
+    if (!win) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self install]; });
+        return;
+    }
     for (UIGestureRecognizer *g in win.gestureRecognizers) {
         if ([g isKindOfClass:UILongPressGestureRecognizer.class] && ((UILongPressGestureRecognizer *)g).numberOfTouchesRequired == 3) return;
     }
@@ -322,7 +368,6 @@ static UIViewController *TraeTopController(void) {
     lp.minimumPressDuration = 0.8;
     lp.delegate = self;
     [win addGestureRecognizer:lp];
-    NSLog(@"[TraeCreds] 3-finger long press installed");
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other { return YES; }
@@ -350,12 +395,9 @@ static UIViewController *TraeTopController(void) {
     b.titleLabel.font = [UIFont boldSystemFontOfSize:20];
     [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     [b addTarget:self action:@selector(openPanel) forControlEvents:UIControlEventTouchUpInside];
-
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
-    [b addGestureRecognizer:pan];
+    [b addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)]];
     UILongPressGestureRecognizer *hide = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onIconLongPress:)];
     [b addGestureRecognizer:hide];
-
     [win addSubview:b];
     self.icon = b;
 }
@@ -372,15 +414,13 @@ static UIViewController *TraeTopController(void) {
     [self hideIcon];
 }
 
-- (void)hideIcon {
-    [self.icon removeFromSuperview];
-    self.icon = nil;
-}
+- (void)hideIcon { [self.icon removeFromSuperview]; self.icon = nil; }
 
 - (void)openPanel {
-    NSDictionary *snap = [[TraeCredStore shared] snapshot];
+    [[TraeCredStore shared] scanKeychain];
+    [[TraeCredStore shared] scanDefaults];
     TraeCredsPanel *p = [TraeCredsPanel new];
-    p.creds = snap ?: @{};
+    p.creds = [[TraeCredStore shared] snapshot] ?: @{};
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:p];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     UIViewController *top = TraeTopController();
@@ -389,7 +429,7 @@ static UIViewController *TraeTopController(void) {
 
 @end
 
-#pragma mark - hooks
+#pragma mark - legacy NSURLSession hooks (kept as a fallback)
 
 %hook NSURLSession
 
@@ -397,10 +437,16 @@ static UIViewController *TraeTopController(void) {
                             completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))handler {
     NSString *url = request.URL.absoluteString;
     if (TraeHost(url)) {
-        @try { [[TraeCredStore shared] noteRequest:request]; } @catch (NSException *e) {}
+        NSMutableData *head = [NSMutableData data];
+        [head appendData:[url dataUsingEncoding:NSUTF8StringEncoding]];
+        for (NSString *f in @[@"Authorization", @"X-Cloudide-Token", @"Cookie"]) {
+            NSString *v = [request valueForHTTPHeaderField:f];
+            if (v) [head appendData:[[NSString stringWithFormat:@"\n%@: %@", f, v] dataUsingEncoding:NSUTF8StringEncoding]];
+        }
+        @try { [[TraeCredStore shared] ingestBytes:head.bytes length:head.length label:@"nsurlsession"]; } @catch (NSException *e) {}
         if (handler) {
             void (^wrapped)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *resp, NSError *err) {
-                @try { [[TraeCredStore shared] noteResponse:data forURL:url]; } @catch (NSException *e) {}
+                @try { [[TraeCredStore shared] ingestBytes:data.bytes length:data.length label:@"nsurlsession-resp"]; } @catch (NSException *e) {}
                 handler(data, resp, err);
             };
             return %orig(request, wrapped);
@@ -411,37 +457,21 @@ static UIViewController *TraeTopController(void) {
 
 %end
 
-%hook NSMutableURLRequest
-
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    %orig;
-    @try {
-        if (TraeHost(self.URL.absoluteString) &&
-            ([field.lowercaseString isEqualToString:@"authorization"] ||
-             [field.lowercaseString isEqualToString:@"x-cloudide-token"])) {
-            [[TraeCredStore shared] noteRequest:self];
-        }
-    } @catch (NSException *e) {}
-}
-
-%end
-
-%hookf(OSStatus, SecItemAdd, CFDictionaryRef attributes, CFTypeRef *result) {
-    OSStatus status = %orig;
-    @try {
-        NSDictionary *dict = (__bridge NSDictionary *)attributes;
-        NSString *svc = dict[(__bridge id)kSecAttrService];
-        NSString *acct = dict[(__bridge id)kSecAttrAccount];
-        if ([svc.lowercaseString containsString:@"trae"] || [svc.lowercaseString containsString:@"solo"] ||
-            [acct.lowercaseString containsString:@"trae"]) {
-            NSLog(@"[TraeCreds] keychain add svc=%@ acct=%@", svc, acct);
-        }
-    } @catch (NSException *e) {}
-    return status;
-}
+#pragma mark - install
 
 %ctor {
+    // BoringSSL hooks: the app's real transport is TTNet/Cronet.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        void *w = dlsym(RTLD_DEFAULT, "SSL_write");
+        void *r = dlsym(RTLD_DEFAULT, "SSL_read");
+        if (w) MSHookFunction(w, (void *)hook_SSL_write, (void **)&orig_SSL_write);
+        if (r) MSHookFunction(r, (void *)hook_SSL_read, (void **)&orig_SSL_read);
+        NSLog(@"[TraeCreds] SSL hooks: write=%p read=%p", w, r);
+    });
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[TraeOverlay shared] install];
+        [[TraeCredStore shared] scanKeychain];
+        [[TraeCredStore shared] scanDefaults];
     });
 }

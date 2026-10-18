@@ -8,5 +8,6 @@ TWEAK_NAME = TraeCreds
 TraeCreds_FILES = Tweak.xm
 TraeCreds_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable
 TraeCreds_FRAMEWORKS = UIKit Foundation Security
+TraeCreds_LDFLAGS = -undefined dynamic_lookup
 
 include $(THEOS_MAKE_PATH)/tweak.mk

@@ -8,16 +8,16 @@ relay 控制台的「手动填写凭证添加账号」。
 
 ## 原理
 
-App 是 Compose Multiplatform（Kotlin）应用，网络走 Ktor Darwin engine → NSURLSession，
-凭据放在 `X-Cloudide-Token` / `Authorization` 请求头里。插件在 NSURLSession 层读取明文请求与响应：
+App 是 Compose Multiplatform（Kotlin）应用，网络走**字节 TTNet（Cronet + BoringSSL）**，
+不经过 NSURLSession。因此插件在 **BoringSSL 明文层**抓取：
 
 | Hook | 作用 |
 |---|---|
-| `-[NSURLSession dataTaskWithRequest:completionHandler:]` | 读请求头、包装 completion 读响应体 |
-| `-[NSMutableURLRequest setValue:forHTTPHeaderField:]` | 兜底捕获后设置的头 |
-| `SecItemAdd` | 仅记录字节账号 SDK 的 Keychain 服务名 |
+| `SSL_write` / `SSL_read`（MSHookFunction） | 扫描明文缓冲区，找 JWT 与 `RefreshToken` JSON 字段 |
+| `-[NSURLSession dataTaskWithRequest:completionHandler:]` | 兜底（部分请求可能走系统栈） |
+| Keychain 枚举 + NSUserDefaults 扫描 | App 启动 / 打开面板时兜底 |
 
-只处理 `trae.cn` / `trae-api-cn` / `mchost.guru` 的请求。
+只处理 `trae.cn` / `trae-api-cn` / `mchost.guru` 的流量。
 
 ## 输出
 
