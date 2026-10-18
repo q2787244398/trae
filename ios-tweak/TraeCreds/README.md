@@ -23,8 +23,29 @@ App 是 Compose Multiplatform（Kotlin）应用，网络走 Ktor Darwin engine �
 
 - 剪贴板：一段 JSON（`token` / `refreshToken` / `userId` / `clientId` / `source`）
 - 文件：App 沙盒 `Documents/trae-creds.json`
-- 弹窗：显示 userId
 - 可选：设置 `Tweak.xm` 里的 `kRelayBaseURL` 后自动 `POST {relay}/api/web-auth` 入池
+
+## 交互
+
+| 操作 | 效果 |
+|---|---|
+| 登录后在 App 内 **三指长按** 0.8 秒 | 出现圆形 **T** 悬浮图标（可拖动） |
+| 点图标 | 弹出面板，显示 token / refreshToken / userId / clientId / source |
+| 点任意一行 | 复制该字段 |
+| 面板右上「复制全部」 | 复制完整 JSON |
+| 长按图标 | 隐藏图标 |
+
+> 图标只在三指长按后出现，不干扰正常使用；凭据每次更新会自动写文件和剪贴板。
+
+## 自动构建
+
+推送到 `main`（改动 `ios-tweak/**`）会触发 `.github/workflows/build.yml`：
+
+1. 版本号自动递增为 `0.1.<GitHub run number>`；
+2. Theos + rootless 打包；
+3. 产物上传到 Actions Artifacts，同时更新 **Releases → latest** 的 deb（永久下载链接）。
+
+也可以手动触发：Actions → build-tweak → Run workflow。
 
 ## 构建
 

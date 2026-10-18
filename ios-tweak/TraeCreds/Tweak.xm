@@ -1,5 +1,10 @@
 // TraeCreds - capture the Trae iOS (com.stone.solo.cn) login credentials
-// so they can be pasted into the relay console's manual "add account" form.
+// and expose them through an in-app floating panel.
+//
+// Interaction:
+//   three-finger long press inside the app -> floating "T" icon
+//   tap the icon                            -> credential panel
+//   tap / long-press a row                  -> copy that value
 //
 // Scope: only requests whose host is a Trae host are inspected. Nothing is
 // uploaded anywhere unless you set kRelayBaseURL below. For your own device
@@ -10,6 +15,7 @@
 #import <Security/Security.h>
 
 // Optional: POST captured credentials to your relay. Leave empty to disable.
+// Example: @"https://your-tunnel.trycloudflare.com"
 static NSString *const kRelayBaseURL = @"";
 
 static NSString *const kCredsFile = @"trae-creds.json";
@@ -41,6 +47,24 @@ static NSString *DocsPath(void) {
     return [dir stringByAppendingPathComponent:kCredsFile];
 }
 
+static UIWindow *TraeKeyWindow(void) {
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                if (w.isKeyWindow) return w;
+            }
+        }
+    }
+    return UIApplication.sharedApplication.keyWindow ?: UIApplication.sharedApplication.windows.firstObject;
+}
+
+static UIViewController *TraeTopController(void) {
+    UIViewController *top = TraeKeyWindow().rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    return top;
+}
+
 #pragma mark - store
 
 @interface TraeCredStore : NSObject
@@ -49,10 +73,11 @@ static NSString *DocsPath(void) {
 @property (nonatomic, copy) NSString *userId;
 @property (nonatomic, copy) NSString *clientId;
 @property (nonatomic, copy) NSString *lastURL;
+@property (nonatomic, strong) NSDate *capturedAt;
 + (instancetype)shared;
 - (void)noteRequest:(NSURLRequest *)request;
 - (void)noteResponse:(NSData *)data forURL:(NSString *)url;
-- (void)flushIfChanged;
+- (NSDictionary *)snapshot;
 @end
 
 @implementation TraeCredStore
@@ -60,7 +85,18 @@ static NSString *DocsPath(void) {
 + (instancetype)shared {
     static TraeCredStore *s;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ s = [TraeCredStore new]; s.clientId = @"ono9krqynydwx5"; });
+    dispatch_once(&once, ^{
+        s = [TraeCredStore new];
+        s.clientId = @"ono9krqynydwx5";
+        NSData *old = [NSData dataWithContentsOfFile:DocsPath()];
+        if (old) {
+            NSDictionary *d = [NSJSONSerialization JSONObjectWithData:old options:0 error:nil];
+            if ([d isKindOfClass:NSDictionary.class]) {
+                s.token = d[@"token"]; s.refreshToken = d[@"refreshToken"];
+                s.userId = d[@"userId"]; s.clientId = d[@"clientId"] ?: s.clientId;
+            }
+        }
+    });
     return s;
 }
 
@@ -68,7 +104,6 @@ static NSString *DocsPath(void) {
     NSString *url = request.URL.absoluteString ?: @"";
     NSString *auth = [request valueForHTTPHeaderField:@"Authorization"];
     NSString *cloudide = [request valueForHTTPHeaderField:@"X-Cloudide-Token"];
-    NSString *cookie = [request valueForHTTPHeaderField:@"Cookie"];
     NSString *jwt = nil;
 
     if ([auth containsString:@"Cloud-IDE-JWT"]) {
@@ -84,23 +119,14 @@ static NSString *DocsPath(void) {
         self.lastURL = url;
         if (![jwt isEqualToString:self.token]) {
             self.token = jwt;
+            self.capturedAt = [NSDate date];
             NSDictionary *payload = DecodeJWT(jwt);
             NSDictionary *data = payload[@"data"];
             if ([data isKindOfClass:NSDictionary.class]) {
                 id uid = data[@"id"] ?: data[@"uid"];
                 if (uid) self.userId = [uid description];
             }
-            [self flushIfChanged];
-        }
-    }
-
-    // A cookie-only session still carries the account id in some builds.
-    if (cookie.length && !self.userId) {
-        for (NSString *part in [cookie componentsSeparatedByString:@";"]) {
-            if ([part.lowercaseString containsString:@"uid"]) {
-                NSArray *kv = [part componentsSeparatedByString:@"="];
-                if (kv.count == 2) { self.userId = [kv[1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet]; }
-            }
+            [self persist];
         }
     }
 }
@@ -114,24 +140,25 @@ static NSString *DocsPath(void) {
     id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![obj isKindOfClass:NSDictionary.class]) return;
 
+    BOOL changed = NO;
     NSMutableArray *stack = [NSMutableArray arrayWithObject:obj];
     while (stack.count) {
         id cur = stack.lastObject;
         [stack removeLastObject];
         if ([cur isKindOfClass:NSDictionary.class]) {
-            for (id k in cur) {
+            for (id k in [(NSDictionary *)cur allKeys]) {
                 id v = cur[k];
                 NSString *key = [k description].lowercaseString;
                 if ([v isKindOfClass:NSString.class] && [v length] > 16) {
                     if ([key isEqualToString:@"refreshtoken"] || [key isEqualToString:@"refresh_token"]) {
-                        self.refreshToken = v;
+                        if (![v isEqualToString:self.refreshToken]) { self.refreshToken = v; changed = YES; }
                     } else if (([key isEqualToString:@"token"] || [key isEqualToString:@"accesstoken"] ||
                                 [key isEqualToString:@"cloudidetoken"]) && [v hasPrefix:@"eyJ"]) {
-                        if (!self.token) self.token = v;
+                        if (!self.token) { self.token = v; changed = YES; }
                     } else if ([key isEqualToString:@"userid"] || [key isEqualToString:@"uid"]) {
-                        if (!self.userId) self.userId = v;
+                        if (!self.userId) { self.userId = v; changed = YES; }
                     } else if ([key isEqualToString:@"clientid"] || [key isEqualToString:@"client_id"]) {
-                        self.clientId = v;
+                        if (![v isEqualToString:self.clientId]) { self.clientId = v; changed = YES; }
                     }
                 } else if ([v isKindOfClass:NSDictionary.class] || [v isKindOfClass:NSArray.class]) {
                     [stack addObject:v];
@@ -141,7 +168,7 @@ static NSString *DocsPath(void) {
             [stack addObjectsFromArray:cur];
         }
     }
-    [self flushIfChanged];
+    if (changed) [self persist];
 }
 
 - (NSDictionary *)snapshot {
@@ -155,30 +182,12 @@ static NSString *DocsPath(void) {
     }
 }
 
-- (void)flushIfChanged {
+- (void)persist {
     NSDictionary *snap = [self snapshot];
     if (!snap) return;
-
-    static NSString *lastJSON = nil;
     NSData *json = [NSJSONSerialization dataWithJSONObject:snap options:NSJSONWritingPrettyPrinted error:nil];
-    NSString *text = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
-    if ([text isEqualToString:lastJSON]) return;
-    lastJSON = text;
-
-    [text writeToFile:DocsPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    UIPasteboard.generalPasteboard.string = text;
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *win = UIApplication.sharedApplication.windows.firstObject;
-        UIViewController *top = win.rootViewController;
-        while (top.presentedViewController) top = top.presentedViewController;
-        if (!top) return;
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Trae 凭据已捕获"
-                                                                   message:[NSString stringWithFormat:@"userId: %@\n已复制到剪贴板，可直接粘贴到 relay 控制台。", snap[@"userId"] ?: @"?"]
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-        [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-        [top presentViewController:ac animated:YES completion:nil];
-    });
+    [json writeToFile:DocsPath() atomically:YES];
+    UIPasteboard.generalPasteboard.string = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
 
     if (kRelayBaseURL.length) {
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:
@@ -188,6 +197,192 @@ static NSString *DocsPath(void) {
         req.HTTPBody = json;
         [[NSURLSession.sharedSession dataTaskWithRequest:req] resume];
     }
+}
+
+@end
+
+#pragma mark - panel
+
+@interface TraeCredsPanel : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSDictionary *creds;
+@property (nonatomic, strong) NSArray<NSString *> *rows;
+@end
+
+@implementation TraeCredsPanel
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Trae 凭据";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.rows = @[@"token", @"refreshToken", @"userId", @"clientId", @"source"];
+
+    UITableView *tv = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    tv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    tv.dataSource = self;
+    tv.delegate = self;
+    [self.view addSubview:tv];
+
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStyleDone
+                                        target:self action:@selector(close)];
+    self.navigationItem.leftBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"复制全部" style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(copyAll)];
+}
+
+- (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)copyAll {
+    if (!self.creds) return;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:self.creds options:NSJSONWritingPrettyPrinted error:nil];
+    UIPasteboard.generalPasteboard.string = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    [self toast:@"已复制完整 JSON"];
+}
+
+- (void)toast:(NSString *)text {
+    UILabel *l = [UILabel new];
+    l.text = text;
+    l.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    l.textColor = UIColor.whiteColor;
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.8];
+    l.textAlignment = NSTextAlignmentCenter;
+    l.layer.cornerRadius = 10;
+    l.clipsToBounds = YES;
+    [l sizeToFit];
+    CGRect f = l.frame;
+    f.size.width += 32; f.size.height += 18;
+    l.frame = f;
+    l.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height - 90);
+    l.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    [self.view addSubview:l];
+    [UIView animateWithDuration:0.25 animations:^{ l.alpha = 0; } completion:^(BOOL done) { [l removeFromSuperview]; }];
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return self.rows.count; }
+
+- (NSString *)valueForRow:(NSInteger)row {
+    NSString *key = self.rows[row];
+    id v = self.creds[key];
+    if (!v) return @"（未捕获）";
+    return [v description];
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"c"];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"c"];
+    NSString *key = self.rows[indexPath.row];
+    NSString *val = [self valueForRow:indexPath.row];
+    cell.textLabel.text = key;
+    cell.detailTextLabel.text = val.length > 90 ? [[val substringToIndex:90] stringByAppendingString:@"…"] : val;
+    cell.detailTextLabel.numberOfLines = 2;
+    cell.detailTextLabel.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tv deselectRowAtIndexPath:indexPath animated:YES];
+    NSString *val = [self valueForRow:indexPath.row];
+    UIPasteboard.generalPasteboard.string = val;
+    [self toast:[NSString stringWithFormat:@"已复制 %@", self.rows[indexPath.row]]];
+}
+
+@end
+
+#pragma mark - overlay
+
+@interface TraeOverlay : NSObject <UIGestureRecognizerDelegate>
+@property (nonatomic, strong) UIButton *icon;
++ (instancetype)shared;
+- (void)install;
+- (void)showIcon;
+- (void)hideIcon;
+- (void)openPanel;
+@end
+
+@implementation TraeOverlay
+
++ (instancetype)shared {
+    static TraeOverlay *s;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [TraeOverlay new]; });
+    return s;
+}
+
+- (void)install {
+    UIWindow *win = TraeKeyWindow();
+    if (!win) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self install]; }); return; }
+    for (UIGestureRecognizer *g in win.gestureRecognizers) {
+        if ([g isKindOfClass:UILongPressGestureRecognizer.class] && ((UILongPressGestureRecognizer *)g).numberOfTouchesRequired == 3) return;
+    }
+    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
+    lp.numberOfTouchesRequired = 3;
+    lp.minimumPressDuration = 0.8;
+    lp.delegate = self;
+    [win addGestureRecognizer:lp];
+    NSLog(@"[TraeCreds] 3-finger long press installed");
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other { return YES; }
+
+- (void)onLongPress:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    [self showIcon];
+    UIImpactFeedbackGenerator *h = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [h impactOccurred];
+}
+
+- (void)showIcon {
+    if (self.icon) { self.icon.hidden = NO; return; }
+    UIWindow *win = TraeKeyWindow();
+    if (!win) return;
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.frame = CGRectMake(16, 120, 46, 46);
+    b.layer.cornerRadius = 23;
+    b.backgroundColor = [UIColor colorWithRed:0.18 green:0.49 blue:0.96 alpha:0.92];
+    b.layer.shadowColor = UIColor.blackColor.CGColor;
+    b.layer.shadowOpacity = 0.25;
+    b.layer.shadowRadius = 6;
+    b.layer.shadowOffset = CGSizeMake(0, 2);
+    [b setTitle:@"T" forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:20];
+    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    [b addTarget:self action:@selector(openPanel) forControlEvents:UIControlEventTouchUpInside];
+
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
+    [b addGestureRecognizer:pan];
+    UILongPressGestureRecognizer *hide = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onIconLongPress:)];
+    [b addGestureRecognizer:hide];
+
+    [win addSubview:b];
+    self.icon = b;
+}
+
+- (void)onPan:(UIPanGestureRecognizer *)p {
+    UIView *v = p.view;
+    CGPoint t = [p translationInView:v.superview];
+    v.center = CGPointMake(v.center.x + t.x, v.center.y + t.y);
+    [p setTranslation:CGPointZero inView:v.superview];
+}
+
+- (void)onIconLongPress:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    [self hideIcon];
+}
+
+- (void)hideIcon {
+    [self.icon removeFromSuperview];
+    self.icon = nil;
+}
+
+- (void)openPanel {
+    NSDictionary *snap = [[TraeCredStore shared] snapshot];
+    TraeCredsPanel *p = [TraeCredsPanel new];
+    p.creds = snap ?: @{};
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:p];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    UIViewController *top = TraeTopController();
+    if (top) [top presentViewController:nav animated:YES completion:nil];
 }
 
 @end
@@ -241,4 +436,12 @@ static NSString *DocsPath(void) {
         }
     } @catch (NSException *e) {}
     return status;
+}
+
+%end
+
+%ctor {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[TraeOverlay shared] install];
+    });
 }

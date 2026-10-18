@@ -1,0 +1,63 @@
+name: build-tweak
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios-tweak/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tweak-build
+  cancel-in-progress: true
+
+jobs:
+  tweak:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Theos toolchain
+        uses: Randomblock1/theos-action@v1
+
+      - name: Bump version
+        id: ver
+        run: |
+          ver="0.1.${GITHUB_RUN_NUMBER}"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          sed -i "s/^Version:.*/Version: $ver/" ios-tweak/TraeCreds/control
+          grep -E '^(Package|Version|Architecture):' ios-tweak/TraeCreds/control
+
+      - name: Build rootless deb
+        working-directory: ios-tweak/TraeCreds
+        run: |
+          make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+          ls -lh packages/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraeCreds-${{ steps.ver.outputs.version }}
+          path: ios-tweak/TraeCreds/packages/*.deb
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Update rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: TraeCreds latest build
+          body: |
+            Auto build from `${{ github.sha }}`
+            Version: `${{ steps.ver.outputs.version }}`
+
+            Install: download the `.deb` and `dpkg -i` on a jailbroken device
+            (rootless: Dopamine / palera1n / Relaxin).
+          files: ios-tweak/TraeCreds/packages/*.deb
+          prerelease: false
+          make_latest: true

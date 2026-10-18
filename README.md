@@ -60,7 +60,13 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 
 目标 App：`com.stone.solo.cn`（TRAE SOLO，Compose Multiplatform + 字节账号 SDK）。
 插件 hook `NSURLSession` / `NSMutableURLRequest` / Keychain，捕获发往 `api.trae.cn`
-的 `X-Cloudide-Token` / `Authorization` 头，把 token、refreshToken、userId 复制到剪贴板并落盘。
+的 `X-Cloudide-Token` / `Authorization` 头。
+
+登录后在 App 内 **三指长按** → 出现悬浮 **T** 图标 → 点开查看 / 逐项复制凭据。
+
+**自动构建**：推送改动到 `ios-tweak/**` 会触发 GitHub Actions，
+版本自动递增（`0.1.<run_number>`），deb 上传到 Actions Artifacts 和
+[Releases → latest](https://github.com/q2787244398/trae/releases/latest)。
 
 见 `ios-tweak/TraeCreds/README.md`。
 
