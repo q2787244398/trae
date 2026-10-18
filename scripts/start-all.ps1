@@ -1,4 +1,4 @@
-﻿# start-all.ps1 - one-click launcher for the local Trae2api-cn relay.
+# start-all.ps1 - one-click launcher for the local Trae2api-cn relay.
 # Starts: relay (127.0.0.1:8000) -> Cloudflare quick tunnel -> local auth helper.
 # Writes the fresh public console URL to the Desktop.
 # Run via start-all.bat (double-click) or:
@@ -47,10 +47,14 @@ if (-not (Test-Port 8000)) {
     Write-Step '[1/3] relay already listening on 8000 - skipped'
 }
 
-# ---------- 2) cloudflare quick tunnel ----------
+# ---------- 2) public endpoint (Tailscale Funnel first, cloudflared fallback) ----------
 $url = $null
+$tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
 if ($NoTunnel) {
-    Write-Step '[2/3] tunnel skipped (-NoTunnel)'
+    Write-Step '[2/3] public endpoint skipped (-NoTunnel)'
+} elseif ((Test-Path $tsExe) -and ((& $tsExe funnel status 2>$null | Out-String) -match 'https://([A-Za-z0-9.-]+\.ts\.net)')) {
+    $url = 'https://' + $Matches[1]
+    Write-Step "[2/3] Tailscale Funnel active: $url"
 } else {
 Write-Step '[2/3] starting Cloudflare tunnel ...'
 $tunLog = Join-Path $LogDir 'tunnel.log'
@@ -123,6 +127,5 @@ Write-Host '  password     : relay-admin-password.txt'
 Write-Host '  API key      : relay-api-key.txt'
 Write-Host "  logs         : $LogDir"
 Write-Host '------------------------------------------------------------' -ForegroundColor DarkGray
-Write-Host '  NOTE: the quick-tunnel URL changes on every run.' -ForegroundColor Yellow
-Write-Host '  A stable address needs your own domain + a named tunnel.' -ForegroundColor Yellow
+Write-Host '  Public endpoint: Tailscale Funnel (fixed) or Cloudflare quick tunnel (changes per run).' -ForegroundColor Yellow
 Write-Host '------------------------------------------------------------' -ForegroundColor DarkGray

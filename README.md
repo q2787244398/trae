@@ -46,6 +46,9 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 
 详细步骤、多账号配置、客户端接入见 **[docs/安装与多账号说明.md](docs/安装与多账号说明.md)**。
 
+> 想要固定公网地址：用 **Tailscale Funnel**（见安装说明 2.5），地址形如
+> `https://trae-relay.<tailnet>.ts.net`，重启不变；不配置则回退 Cloudflare 临时隧道。
+
 ## 本地补丁（相对上游）
 
 1. `relay/src/main.py`：管理面 HTTP Basic 认证中间件（上游 `/api/*` 无鉴权）
