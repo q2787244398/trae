@@ -613,6 +613,7 @@ PUBLIC_PATHS = {
     "/web/login",
     "/web/login/download",
     "/web/login/helper-info",
+    "/web/wb",
     "/authorize",
     "/api/web-auth",
     "/api/logout",
@@ -1990,6 +1991,7 @@ def _web_login_html() -> str:
     <button class="nav-item" role="tab" data-tab="settings" data-title="轮询与设置" onclick="switchTab('settings')">{ic['sliders-horizontal']}<span>轮询与设置</span></button>
     <button class="nav-item" role="tab" data-tab="models" data-title="模型测试" onclick="switchTab('models')">{ic['activity']}<span>模型测试</span></button>
     <button class="nav-item" role="tab" data-tab="model-list" data-title="模型列表" onclick="switchTab('model-list')">{ic['list']}<span>模型列表</span></button>
+    <button class="nav-item" role="tab" data-tab="workbuddy" data-title="WorkBuddy" onclick="switchTab('workbuddy')">{ic['coins']}<span>WorkBuddy</span></button>
   </nav>
   <div class="sidebar-foot"><span>Trae2api-cn</span><span>v{APP_VERSION}</span></div>
 </aside>
@@ -2386,6 +2388,10 @@ def _web_login_html() -> str:
   <div id="models-msg" class="msg" role="status" aria-live="polite"></div>
 </section>
 </div>
+</div>
+
+<div class="tab-page" data-page="workbuddy">
+<iframe id="wb-frame" src="/web/wb" title="WorkBuddy 管理" style="width:100%;height:calc(100vh - 150px);min-height:540px;border:0;border-radius:14px"></iframe>
 </div>
 
 </div>
@@ -13189,6 +13195,191 @@ async def web_login_helper_info(request: Request, relay_param: str = Query("", a
             "revision": str(os.environ.get("RELAY_BUILD_REVISION") or "local"),
         }
     )
+
+
+_WB_PAGE_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WorkBuddy 账号池管理</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1c2333;--sub:#69708a;--bd:#e3e6ee;--ac:#4f6ef7;--ok:#189a56;--warn:#c47f17;--bad:#cf3f4f;--chip:#eef1f8}
+@media (prefers-color-scheme:dark){:root{--bg:#14161c;--card:#1d2028;--tx:#e8eaf2;--sub:#9aa1b8;--bd:#2b2f3a;--ac:#6b85ff;--ok:#3ecf8e;--warn:#e8b054;--bad:#f07185;--chip:#262a35}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);padding:20px}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:18px;margin-bottom:4px}
+.sub{color:var(--sub);font-size:12.5px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chip{background:var(--chip);border-radius:999px;padding:3px 12px;font-size:12.5px;color:var(--sub)}
+.chip b{color:var(--tx)}
+.chip.g b{color:var(--ok)}.chip.w b{color:var(--warn)}.chip.b b{color:var(--bad)}
+button,.btn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer}
+button:hover{border-color:var(--ac);color:var(--ac)}
+button.pri{background:var(--ac);border-color:var(--ac);color:#fff}
+button.pri:hover{opacity:.88;color:#fff}
+button.dg:hover{border-color:var(--bad);color:var(--bad)}
+button:disabled{opacity:.5;cursor:not-allowed}
+select{border:1px solid var(--bd);border-radius:8px;padding:5px 8px;background:var(--card);color:var(--tx);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--bd);vertical-align:top}
+th{color:var(--sub);font-weight:600;font-size:12px;white-space:nowrap}
+td .tag{display:inline-block;border-radius:6px;padding:1px 8px;font-size:12px}
+.tag.on{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+.tag.off{background:var(--chip);color:var(--sub)}
+.tag.err{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+.mut{color:var(--sub);font-size:12px}
+.msg{margin-top:8px;font-size:12.5px;color:var(--sub);min-height:18px;white-space:pre-wrap}
+.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}
+.linkbox{margin-top:10px;padding:10px 12px;border:1px dashed var(--ac);border-radius:10px;font-size:13px}
+.linkbox a{color:var(--ac);word-break:break-all}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--ac);border-top-color:transparent;border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.empty{color:var(--sub);padding:18px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>WorkBuddy 账号池</h1>
+<div class="sub">wb-* 前缀模型走本池 · 与 Trae 账号池互相独立 · 接口 /api/wb-*</div>
+
+<div class="card">
+  <div class="row" id="status-row"><span class="chip">加载中…</span></div>
+  <div class="row" style="margin-top:10px">
+    <button class="pri" onclick="addAccount(this)">＋ 添加账号（OAuth 登录）</button>
+    <button onclick="refreshCredits(this)">刷新签到/状态</button>
+    <button onclick="loadAll()">刷新列表</button>
+    <span style="flex:1"></span>
+    <span class="mut">轮询模式：</span>
+    <select id="poll-mode" onchange="setPolling()">
+      <option value="credit-priority">积分优先</option>
+      <option value="round-robin">轮转</option>
+    </select>
+    <label class="mut" style="cursor:pointer"><input type="checkbox" id="poll-on" onchange="setPolling()" style="vertical-align:-2px"> 启用</label>
+  </div>
+  <div id="login-box"></div>
+  <div id="top-msg" class="msg"></div>
+</div>
+
+<div class="card">
+  <div class="row"><b>账号列表</b><span style="flex:1"></span><span class="mut" id="acc-meta"></span></div>
+  <div id="acc-table"></div>
+</div>
+</div>
+
+<script>
+var POLL=null,STATE=null;
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function api(p,opt){
+  return fetch(p,Object.assign({credentials:'same-origin',headers:{'Content-Type':'application/json'}},opt)).then(function(r){
+    if(r.status===401){location.reload();throw new Error('需要重新登录管理台');}
+    return r.json();
+  });
+}
+function msg(id,txt,cls){var el=document.getElementById(id);el.textContent=txt||'';el.className='msg'+(cls?' '+cls:'');}
+function fmtTime(ms){if(!ms)return '--';var d=new Date(Number(ms));return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+function daysLeft(ms){if(!ms)return '--';var v=(Number(ms)-Date.now())/864e5;return v>=0?v.toFixed(1)+' 天':'已过期';}
+
+function loadAll(){loadStatus();loadAccounts();}
+function loadStatus(){
+  api('/api/wb-status').then(function(d){
+    var row=document.getElementById('status-row');
+    var chips=[];
+    chips.push('<span class="chip '+(d.provider_enabled?'g':'b')+'">Provider <b>'+(d.provider_enabled?'启用':'停用')+'</b></span>');
+    chips.push('<span class="chip">账号 <b>'+d.accounts_total+'</b> 个</span>');
+    chips.push('<span class="chip '+(d.accounts_eligible>0?'g':'w')+'">可用 <b>'+d.accounts_eligible+'</b> 个</span>');
+    chips.push('<span class="chip">wb 模型 <b>'+d.models.length+'</b> 个: '+esc(d.models.join(', '))+'</span>');
+    row.innerHTML=chips.join(' ');
+    document.getElementById('poll-mode').value=d.polling.mode||'credit-priority';
+    document.getElementById('poll-on').checked=!!d.polling.enabled;
+  }).catch(function(e){msg('top-msg','状态加载失败: '+e.message,'bad');});
+}
+function loadAccounts(){
+  api('/api/wb-accounts').then(function(d){
+    var list=d.accounts||[];
+    document.getElementById('acc-meta').textContent='共 '+list.length+' 个';
+    var box=document.getElementById('acc-table');
+    if(!list.length){box.innerHTML='<div class="empty">还没有 WorkBuddy 账号，点上方"添加账号"用 OAuth 登录即可加入池子</div>';return;}
+    var h='<table><thead><tr><th>账号</th><th>状态</th><th>Access 有效期</th><th>签到</th><th>异常</th><th>操作</th></tr></thead><tbody>';
+    list.forEach(function(a){
+      var st=a.needs_relogin?'<span class="tag err">需重新登录</span>':(a.model_enabled?'<span class="tag on">启用</span>':'<span class="tag off">已停用</span>');
+      var ck=(a.quota_cache&&a.quota_cache.checkin)||{};
+      var ckTxt=(ck.active===undefined&&ck.today_checked_in===undefined)?'--':
+        (ck.today_checked_in?'✅ 今日已签'+(ck.streak_days?(' · 连签 '+ck.streak_days+' 天'):'')+(ck.daily_credit?(' · +'+ck.daily_credit):''):'未签到');
+      var err=a.last_error?('<span class="tag err">'+esc(String(a.last_error).slice(0,40))+(a.consecutive_failures?(' ×'+a.consecutive_failures):'')+'</span>'):'<span class="mut">-</span>';
+      var btns='<button class="btn-sm" onclick="toggleAcc(\''+esc(a.uid)+'\','+(!a.model_enabled)+')">'+(a.model_enabled?'停用':'启用')+'</button> '
+             +'<button class="dg" onclick="delAcc(\''+esc(a.uid)+'\',\''+esc(a.nickname_plain)+'\')">删除</button>';
+      h+='<tr><td><b>'+esc(a.nickname_plain)+'</b><br><span class="mut">'+esc(String(a.uid).slice(0,10))+'… · '+esc(a.domain||'')+'</span></td>'
+        +'<td>'+st+'</td><td>'+fmtTime(a.expires_at)+'<br><span class="mut">'+daysLeft(a.expires_at)+'</span></td>'
+        +'<td>'+ckTxt+'</td><td>'+err+'</td><td style="white-space:nowrap">'+btns+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    box.innerHTML=h;
+  }).catch(function(e){document.getElementById('acc-table').innerHTML='<div class="empty">加载失败: '+esc(e.message)+'</div>';});
+}
+function toggleAcc(uid,on){
+  api('/api/wb-accounts/'+encodeURIComponent(uid)+'/'+(on?'enable':'disable'),{method:'POST'}).then(function(){loadAll();});
+}
+function delAcc(uid,nick){
+  if(!confirm('确定删除账号「'+nick+'」？其 token 将从池中移除。'))return;
+  api('/api/wb-accounts/'+encodeURIComponent(uid),{method:'DELETE'}).then(function(){loadAll();});
+}
+function refreshCredits(btn){
+  btn.disabled=true;msg('top-msg','正在刷新签到/状态…');
+  api('/api/wb-credits/refresh',{method:'POST'}).then(function(d){
+    var ok=0,bad=0;(d.results||[]).forEach(function(r){r.ok?ok++:bad++;});
+    msg('top-msg','刷新完成：成功 '+ok+'，失败 '+bad,'ok');
+    loadAll();
+  }).catch(function(e){msg('top-msg','刷新失败: '+e.message,'bad');}).finally(function(){btn.disabled=false;});
+}
+function setPolling(){
+  api('/api/wb-polling',{method:'POST',body:JSON.stringify({enabled:document.getElementById('poll-on').checked,mode:document.getElementById('poll-mode').value})})
+    .then(function(){msg('top-msg','轮询设置已保存','ok');loadStatus();});
+}
+function addAccount(btn){
+  btn.disabled=true;msg('top-msg','正在创建登录会话…');
+  document.getElementById('login-box').innerHTML='';
+  api('/api/wb-auth/login-start',{method:'POST'}).then(function(d){
+    btn.disabled=false;
+    if(!d.success){msg('top-msg','创建登录会话失败','bad');return;}
+    STATE=d.state;
+    document.getElementById('login-box').innerHTML=
+      '<div class="linkbox"><b>1.</b> 点击链接并用 WorkBuddy 账号完成登录：<a href="'+esc(d.auth_url)+'" target="_blank" rel="noopener">'+esc(d.auth_url)+'</a><br>'
+      +'<b>2.</b> 登录成功后停留在页面几秒，本窗口会自动检测（有效期 '+Math.round((d.expires_in||600)/60)+' 分钟）<br>'
+      +'<span class="mut"><span class="spin"></span>等待授权中…（获取到明文 token 后自动加入账号池）</span></div>';
+    window.open(d.auth_url,'_blank');
+    var tries=0;
+    POLL=setInterval(function(){
+      tries++;
+      if(tries>150){clearInterval(POLL);POLL=null;msg('top-msg','等待超时，请重试','bad');return;}
+      api('/api/wb-auth/login-poll?state='+encodeURIComponent(STATE)).then(function(r){
+        if(r.status==='ok'){
+          clearInterval(POLL);POLL=null;
+          if(r.imported){msg('top-msg','✅ 账号「'+(r.nickname||r.uid)+'」已加入账号池','ok');}
+          else{msg('top-msg','登录成功但导入失败：'+(r.import_error||'未知'),'bad');}
+          document.getElementById('login-box').innerHTML='';
+          loadAll();
+        }else if(r.status==='error'){
+          clearInterval(POLL);POLL=null;
+          msg('top-msg','登录失败：['+(r.code||'')+'] '+(r.msg||''),'bad');
+        }
+      }).catch(function(){});
+    },3000);
+  }).catch(function(e){btn.disabled=false;msg('top-msg','发起登录失败: '+e.message,'bad');});
+}
+loadAll();
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/web/wb", response_class=HTMLResponse)
+async def wb_admin_page():
+    """WorkBuddy 账号池管理页（控制台 WorkBuddy 标签页内嵌）。"""
+    return HTMLResponse(_WB_PAGE_HTML)
 
 
 @app.get("/authorize", response_class=HTMLResponse)
