@@ -26,8 +26,17 @@ CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "wb_models_cache.
 CACHE_PATH_AI = Path(__file__).resolve().parent.parent / "data" / "wb_models_cache_ai.json"
 CACHE_TTL_MS = 6 * 3600 * 1000
 
-# P0 实测可用模型（2026-10-20 流式推理 200 验证；11102=模型不存在）
-STATIC_MODELS: list[str] = ["kimi-k3", "deepseek-v3.2", "deepseek-v4-pro"]
+# P0 实测可用模型（2026-10-20/21 逐个流式 200 验证；11102=模型不存在）
+# 来源：桌面端 5.8.3 官方目录（product.cloudhosted.json /models 22 项）逐一实测筛选：
+#   - glm-4.7/4.6/5.0/4.6v、deepseek-v3.1/v3-0324、kimi-k2-thinking、minimax-m2.5、
+#     deepseek-v4-pro-exclusive、hunyuan-2.0-instruct → 11102 模型不存在（目录超前于网关）
+#   - glm-5.1、glm-5.0-turbo → 11133 参数被拒（疑似需特定套餐），暂不暴露
+#   - hunyuan-image-v3.0 → 文生图模型，非聊天，不暴露
+STATIC_MODELS: list[str] = [
+    "kimi-k3", "deepseek-v3.2", "deepseek-v4-pro",       # 首批 P0 验证
+    "deepseek-v3-2-volc", "hunyuan-chat", "minimax-m2.7",
+    "glm-5v-turbo", "kimi-k2.6", "kimi-k2.5", "auto",
+]
 # 国际版暂无实测清单，等 P0' 后填充
 STATIC_MODELS_AI: list[str] = []
 

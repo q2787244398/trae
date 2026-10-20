@@ -16,11 +16,19 @@
 
 ## 可用模型（已实测）
 
-| 对外模型名 | 上游模型 | 说明 |
-|---|---|---|
-| `wb-kimi-k3` | kimi-k3 | 支持 reasoning_content |
-| `wb-deepseek-v3.2` | deepseek-v3.2 | 支持推理 |
-| `wb-deepseek-v4-pro` | deepseek-v4-pro | 支持推理 |
+wb 池共 **10 个**模型，全部经真实流式推理 200 验证（2026-10-21）。来源：桌面端 5.8.3 官方目录（`product.cloudhosted.json` /models 22 项）逐一实测筛选——目录中 glm-4.7/4.6/5.0、deepseek-v3.1 等网关返回 11102（模型不存在，目录超前于网关），glm-5.1 / glm-5.0-turbo 返回 11133（疑似需特定套餐）暂不暴露，hunyuan-image-v3.0 为文生图不暴露。
+
+| 对外模型名 | 说明 |
+|---|---|
+| `wb-kimi-k3` | 首批验证 |
+| `wb-deepseek-v3.2` | 首批验证 |
+| `wb-deepseek-v4-pro` | 首批验证，推理 |
+| `wb-deepseek-v3-2-volc` | 火山引擎版 DeepSeek V3.2 |
+| `wb-hunyuan-chat` | 腾讯混元对话 |
+| `wb-minimax-m2.7` | MiniMax M2.7 |
+| `wb-glm-5v-turbo` | GLM 5V Turbo（视觉） |
+| `wb-kimi-k2.6` / `wb-kimi-k2.5` | Kimi K2 系列 |
+| `wb-auto` | 网关自动路由 |
 
 调用方式与 Trae 池完全一致（同地址同 API Key），仅模型名带 `wb-` 前缀：
 
