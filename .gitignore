@@ -29,3 +29,17 @@ ipa-extract/
 *.ipa
 repo.zip
 backups/
+
+# WorkBuddy 扩展：绝不入库的敏感/运行时文件
+Trae2api-cn-main/.env
+Trae2api-cn-main/.env.*
+!Trae2api-cn-main/.env.example
+Trae2api-cn-main/data/*
+!Trae2api-cn-main/data/.gitkeep
+!Trae2api-cn-main/data/workbuddy_accounts.example.json
+Trae2api-cn-main/relay.out
+Trae2api-cn-main/src.backup-*
+Trae2api-cn-main/**/__pycache__/
+*.pyc
+wb_token*.json
+wb_login_url.txt

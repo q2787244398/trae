@@ -86,3 +86,12 @@ relay 部分基于上游 [autumnsentiment/Trae2api-cn](https://github.com/autumn
 - 本项目不提供任何 Trae 账号、额度或绕过付费的能力；
 - 多账号、自动化、设备指纹相关功能可能触发上游风控，导致封号；
 - 请遵守所在地区法律与 Trae 服务条款。
+
+## WorkBuddy Provider（2026-10-20 新增）
+
+仓库内 `Trae2api-cn-main/` 为**完整可部署项目**（含 WorkBuddy 多账号扩展）：
+
+- 对外仍是同一个 OpenAI 兼容接口，`wb-*` 前缀模型走 WorkBuddy 账号池，其余模型走 Trae 账号池
+- WorkBuddy 池支持：OAuth 扫码加号、token 自动刷新（提前 30 分钟）、签到状态轮询、credit-priority 轮询、熔断隔离
+- 详细说明见 `Trae2api-cn-main/WB_EXTENSION_README.md`
+- 开发与取证过程文档：`docs/WorkBuddy接入-可行性分析.md`、`docs/WorkBuddy接入-详细开发方案.md`
