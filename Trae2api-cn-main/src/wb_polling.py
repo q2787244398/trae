@@ -112,6 +112,7 @@ async def _credits_refresher_loop() -> None:
                 try:
                     quota = await wb_client.fetch_credits(rec)
                     rec["quota_cache"] = quota
+                    wb_store.record_credit_snapshot(rec.get("uid"), quota.get("remaining"), quota.get("total"))
                     if isinstance(quota.get("remaining"), (int, float)):
                         if quota["remaining"] <= 0 and rec.get("model_enabled", True):
                             rec["model_enabled"] = False

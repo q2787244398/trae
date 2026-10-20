@@ -12630,6 +12630,7 @@ async def wb_credits_refresh():
         try:
             quota = await wb_client.fetch_credits(rec)
             rec["quota_cache"] = quota
+            wb_store.record_credit_snapshot(rec.get("uid"), quota.get("remaining"), quota.get("total"))
             results.append({"uid": rec.get("uid"), "ok": True, "checkin": quota.get("checkin")})
         except Exception as exc:
             results.append({"uid": rec.get("uid"), "ok": False, "error": str(exc)[:120]})
@@ -12760,8 +12761,80 @@ async def wb_stats_credit():
                         "daily_credit": ck.get("daily_credit")},
             "token_expire_at": rec.get("expires_at"),
         })
+    # 快照序列 + 每日消耗（口径与 wb-switch 相同：连续快照余额正差值 = 消耗）
+    snaps = wb_store.credit_snapshots()
+    series: dict[str, list] = {}
+    for s in snaps:
+        series.setdefault(str(s.get("uid")), []).append(
+            {"ts": int(s.get("ts") or 0), "remaining": s.get("remaining"), "total": s.get("total")})
+    for v in series.values():
+        v.sort(key=lambda x: x["ts"])
+    daily: dict[str, float] = {}
+    for uid, pts in series.items():
+        for prev, cur in zip(pts, pts[1:]):
+            drop = (float(prev.get("remaining") or 0) - float(cur.get("remaining") or 0))
+            if drop > 0:
+                day = time.strftime("%Y-%m-%d", time.localtime(int(cur["ts"]) / 1000))
+                daily[day] = daily.get(day, 0.0) + drop
+    daily_list = [{"date": d, "consume": round(v, 2)} for d, v in sorted(daily.items())]
+    latest_ts = max((int(s.get("ts") or 0) for s in snaps), default=None)
     return {"success": True, "accounts": out,
-            "balance_note": "积分余额来自上游资源包接口（get-user-resource），为各资源包剩余量汇总"}
+            "daily": daily_list, "series": series,
+            "latest_collect_at": latest_ts,
+            "balance_note": "余额来自上游资源包接口；趋势为快照间余额正差值（与 wb-switch 同口径），首次采集后开始累计"}
+
+
+@app.get("/api/wb-sessions/groups")
+async def wb_sessions_groups(max_groups: int = 120):
+    """关联会话：把调用记录按 账号+模型 且间隔>30min 切分成会话组。"""
+    recs = _wb_usage_records()
+    recs.sort(key=lambda r: int(r.get("ts") or 0))
+    GAP_MS = 30 * 60 * 1000
+    groups: list[dict] = []
+    cur: dict | None = None
+    for r in recs:
+        uid = str(r.get("account_uid"))
+        model = str(r.get("model") or "?")
+        ts = int(r.get("ts") or 0)
+        if cur and cur["uid"] == uid and cur["model"] == model and ts - cur["last_ts"] <= GAP_MS:
+            cur["calls"] += 1
+            cur["prompt"] += int(r.get("prompt_tokens") or 0)
+            cur["completion"] += int(r.get("completion_tokens") or 0)
+            cur["last_ts"] = ts
+            if r.get("status") != "ok":
+                cur["errors"] += 1
+            cur["records"].append(r)
+        else:
+            if cur:
+                groups.append(cur)
+            cur = {"uid": uid, "model": model, "calls": 1,
+                   "prompt": int(r.get("prompt_tokens") or 0),
+                   "completion": int(r.get("completion_tokens") or 0),
+                   "first_ts": ts, "last_ts": ts,
+                   "errors": 1 if r.get("status") != "ok" else 0,
+                   "records": [r]}
+    if cur:
+        groups.append(cur)
+    groups.reverse()  # 最近优先
+    nick = {str(a.get("uid")): str(a.get("nickname_plain") or "?") for a in wb_store.accounts()}
+    out = []
+    for g in groups[:max(1, min(max_groups, 500))]:
+        rec = wb_store.get(g["uid"]) or {}
+        detail = [{"ts": r.get("ts"), "model": r.get("model"), "stream": r.get("stream"),
+                   "prompt_tokens": r.get("prompt_tokens"),
+                   "completion_tokens": r.get("completion_tokens"),
+                   "status": r.get("status"), "error": (r.get("error") or "")[:60]}
+                  for r in reversed(g["records"][-50:])]
+        out.append({
+            "id": f"{g['uid']}:{g['model']}:{g['first_ts']}",
+            "uid": g["uid"], "account": nick.get(g["uid"], "?"),
+            "variant": wb_client.normalize_variant(rec.get("variant")),
+            "model": g["model"], "calls": g["calls"],
+            "prompt_tokens": g["prompt"], "completion_tokens": g["completion"],
+            "first_ts": g["first_ts"], "last_ts": g["last_ts"],
+            "errors": g["errors"], "records": detail,
+        })
+    return {"success": True, "groups": out}
 
 
 @app.get("/api/wb-sessions")

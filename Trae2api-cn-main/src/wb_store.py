@@ -344,3 +344,46 @@ def record_usage(uid: str, model: str, stream: bool,
         tmp = USAGE_PATH.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(recs, ensure_ascii=False), "utf-8")
         os.replace(tmp, USAGE_PATH)
+
+
+# ---------------- 积分快照（积分统计页趋势数据源） ----------------
+# 口径与 wb-switch 相同：余额在连续快照间的正差值即消耗。
+# 去重：同一 uid 余额未变化且距上次记录 < 30 分钟时不重复落盘。
+SNAPSHOTS_PATH = APP_DIR / "data" / "wb_credit_snapshots.json"
+SNAPSHOTS_MAX = 20000
+SNAPSHOT_DEDUPE_MS = 30 * 60 * 1000
+
+def record_credit_snapshot(uid: str, remaining, total) -> None:
+    try:
+        rem = round(float(remaining), 2)
+        tot = round(float(total), 2) if total is not None else None
+    except (TypeError, ValueError):
+        return
+    with _LOCK:
+        try:
+            recs = json.loads(SNAPSHOTS_PATH.read_text("utf-8")) if SNAPSHOTS_PATH.exists() else []
+            if not isinstance(recs, list):
+                recs = []
+        except Exception:
+            recs = []
+        now = _now_ms()
+        for r in reversed(recs):
+            if str(r.get("uid")) != str(uid):
+                continue
+            if abs(float(r.get("remaining") or 0) - rem) < 0.005 and now - int(r.get("ts") or 0) < SNAPSHOT_DEDUPE_MS:
+                return
+            break
+        recs.append({"ts": now, "uid": str(uid), "remaining": rem, "total": tot})
+        if len(recs) > SNAPSHOTS_MAX:
+            recs = recs[-SNAPSHOTS_MAX:]
+        SNAPSHOTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SNAPSHOTS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(recs, ensure_ascii=False), "utf-8")
+        os.replace(tmp, SNAPSHOTS_PATH)
+
+def credit_snapshots() -> list[dict]:
+    try:
+        recs = json.loads(SNAPSHOTS_PATH.read_text("utf-8")) if SNAPSHOTS_PATH.exists() else []
+        return recs if isinstance(recs, list) else []
+    except Exception:
+        return []

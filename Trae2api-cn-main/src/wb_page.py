@@ -87,6 +87,7 @@ textarea.input{width:100%;min-height:130px;font-family:ui-monospace,Consolas,mon
 .grid{display:grid;gap:14px}
 .grid.cols2{grid-template-columns:repeat(auto-fill,minmax(420px,1fr))}
 .grid.cols4{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+.grid.cols3{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
 .acct{display:flex;flex-direction:column;gap:10px}
 .acct.compact{padding:12px}
 .acct-head{display:flex;align-items:center;gap:11px}
@@ -132,6 +133,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .chart rect.bar1{fill:var(--primary)}
 .chart rect.bar2{fill:var(--ok)}
 .chart text{fill:var(--muted);font-size:10px}
+.sortable{cursor:pointer;user-select:none}
+.sortable:hover{color:var(--fg)}
 .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:6px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 
@@ -219,7 +222,8 @@ var ICON = {
   info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
   more:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>',
   zap:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
-  clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>'
+  clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  chevR:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>'
 };
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -283,7 +287,7 @@ function cached(key,path,ttl,cb){
 function invalidate(key){if(key)delete MEM[key];else MEM={};}
 var NAVS=[
   {hash:'/',label:'账号管理',icon:ICON.user},
-  {hash:'/sessions',label:'调用会话',icon:ICON.link},
+  {hash:'/sessions',label:'关联会话',icon:ICON.link},
   {hash:'/token-stats',label:'Token 统计',icon:ICON.chart},
   {hash:'/credit-stats',label:'积分统计',icon:ICON.sparkles},
   {hash:'/settings',label:'设置',icon:ICON.settings}
@@ -569,24 +573,90 @@ function importDialog(){
 }
 
 /* ================= 页面：调用会话 ================= */
+/* ================= 页面：关联会话 ================= */
+function openGroupDetail(g){
+  var toks=(g.prompt_tokens||0)+(g.completion_tokens||0);
+  var rows=(g.records||[]).map(function(r){
+    return '<tr><td>'+fmtDT(r.ts)+'</td><td>'+esc(r.model||'')+'</td>'+
+      '<td class="num">'+fmtTokens(r.prompt_tokens)+'</td><td class="num">'+fmtTokens(r.completion_tokens)+'</td>'+
+      '<td>'+(r.status==='ok'?'<span class="badge ok">ok</span>':'<span class="badge bad">'+esc(r.status||'err')+'</span>')+'</td></tr>';
+  }).join('');
+  openModal('<h3>会话详情</h3>'+
+    '<div class="rowline"><span class="k">账号</span><span>'+esc(g.account)+variantBadge(g.variant)+'</span></div>'+
+    '<div class="rowline"><span class="k">模型</span><span>'+esc(g.model)+'</span></div>'+
+    '<div class="rowline"><span class="k">调用次数</span><b>'+g.calls+(g.errors>0?(' · <span class="badge bad">'+g.errors+' 异常</span>'):'')+'</b></div>'+
+    '<div class="rowline"><span class="k">消耗 Token</span><b>'+fmtTokens(toks)+'</b></div>'+
+    '<div class="rowline"><span class="k">时间范围</span><span>'+fmtDT(g.first_ts)+' ~ '+fmtDT(g.last_ts)+'</span></div>'+
+    '<div class="table-wrap" style="max-height:280px;overflow:auto;margin-top:10px"><table><thead><tr><th>时间</th><th>模型</th><th class="num">输入</th><th class="num">输出</th><th>状态</th></tr></thead><tbody>'+
+    (rows||'<tr><td colspan="5">无明细</td></tr>')+'</tbody></table></div>'+
+    '<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">关闭</button></div>');
+}
 function renderSessions(){
   var view=document.getElementById('view');
-  view.innerHTML='<div class="page-title">调用会话</div>'+
-    '<div class="page-desc">最近经过本池的 wb 请求记录（原版「关联会话」为桌面客户端功能，服务端以真实调用记录呈现）</div>'+
-    '<div class="card"><div class="table-wrap" id="sess-table"><div class="empty">加载中…</div></div></div>';
-  cached('sessions','/api/wb-sessions?limit=120',5000,function(d,stale,err){
-    var el=document.getElementById('sess-table');if(!el)return;
-    if(err){el.innerHTML='<div class="empty">'+esc(err.message)+'</div>';return;}
-    var recs=d.records||[];
-    var el=document.getElementById('sess-table');
-    if(!recs.length){el.innerHTML='<div class="empty">还没有调用记录——用 <b>wb-*</b> 模型发一条消息试试。</div>';return;}
-    var h='<table><thead><tr><th>时间</th><th>账号</th><th>模型</th><th class="num">输入</th><th class="num">输出</th><th>状态</th></tr></thead><tbody>';
-    recs.forEach(function(r){
-      h+='<tr><td>'+fmtDT(r.ts)+'</td><td>'+esc(r.account)+'</td><td>'+esc(r.model)+'</td>'+
-        '<td class="num">'+fmtTokens(r.prompt_tokens)+'</td><td class="num">'+fmtTokens(r.completion_tokens)+'</td>'+
-        '<td>'+(r.status==='ok'?'<span class="badge ok">ok</span>':'<span class="badge bad">'+esc(r.status||'err')+'</span>')+'</td></tr>';
+  view.innerHTML='<div class="page-title">关联会话</div>'+
+    '<div class="page-desc">按「账号 + 模型」且间隔超 30 分钟切分为会话组（原版关联桌面端本地会话库，服务端以真实调用分组呈现）</div>'+
+    '<div class="toolbar">'+
+      '<div class="seg" id="sg-variant"><button data-v="all" class="on">全部</button><button data-v="cn">国内版</button><button data-v="ai">国际版</button></div>'+
+      '<div class="seg" id="sg-status"><button data-s="all" class="on">全部</button><button data-s="ok">正常</button><button data-s="err">有异常</button></div>'+
+    '</div>'+
+    '<div id="sg-list" class="grid cols2"><div class="skl"></div><div class="skl"></div><div class="skl"></div><div class="skl"></div></div>'+
+    '<div id="sg-page" style="display:flex;justify-content:center;margin-top:12px"></div>';
+  var S={groups:[],variant:'all',status:'all',page:1};
+  function paint(){
+    var list=S.groups.filter(function(g){
+      if(S.variant!=='all'&&(g.variant||'cn')!==S.variant)return false;
+      if(S.status==='ok'&&g.errors>0)return false;
+      if(S.status==='err'&&!(g.errors>0))return false;
+      return true;
     });
-    el.innerHTML=h+'</tbody></table>';
+    var PS=8,HIDE=4,pages=Math.max(1,Math.ceil(list.length/PS));
+    if(S.page>pages)S.page=pages;
+    var slice=list.slice((S.page-1)*PS,S.page*PS);
+    var el=document.getElementById('sg-list');if(!el)return;
+    if(!slice.length){
+      el.innerHTML='<div class="empty">暂无会话——用 wb-* 模型发一条消息后，这里会按会话分组展示。</div>';
+    }else{
+      el.innerHTML=slice.map(function(g){
+        var toks=(g.prompt_tokens||0)+(g.completion_tokens||0);
+        return '<div class="card acct sg-card" data-id="'+esc(g.id)+'" style="cursor:pointer">'+
+          '<div class="acct-head"><div class="avatar">'+esc(String(g.account||'?').trim().charAt(0)||'?')+'</div>'+
+          '<div style="flex:1;min-width:0"><div class="acct-name">'+esc(g.account)+variantBadge(g.variant)+
+          (g.errors>0?'<span class="badge bad">'+g.errors+' 异常</span>':'<span class="badge ok">正常</span>')+'</div>'+
+          '<div class="acct-meta">'+esc(g.model)+'</div></div><span style="color:var(--muted)">'+ICON.chevR+'</span></div>'+
+          '<div class="rowline"><span class="k">调用次数</span><b>'+g.calls+'</b></div>'+
+          '<div class="rowline"><span class="k">消耗 Token</span><b>'+fmtTokens(toks)+'</b></div>'+
+          '<div class="rowline"><span class="k">最近活跃</span><span>'+fmtDT(g.last_ts)+'</span></div>'+
+        '</div>';
+      }).join('');
+    }
+    var pg=document.getElementById('sg-page');
+    if(list.length>HIDE&&pages>1){
+      pg.style.display='flex';
+      pg.innerHTML='<div class="seg"><button data-p="prev"'+(S.page<=1?' disabled':'')+'>上一页</button>'+
+        '<button disabled style="border:0;background:none;cursor:default">'+S.page+' / '+pages+'</button>'+
+        '<button data-p="next"'+(S.page>=pages?' disabled':'')+'>下一页</button></div>';
+    }else{pg.style.display='none';pg.innerHTML='';}
+    el.onclick=function(ev){
+      var pb=ev.target.closest('[data-p]');
+      if(pb){S.page+=(pb.getAttribute('data-p')==='next')?1:-1;paint();return;}
+      var c=ev.target.closest('.sg-card');if(!c)return;
+      var g=S.groups.find(function(x){return x.id===c.getAttribute('data-id');});
+      if(g)openGroupDetail(g);
+    };
+  }
+  document.getElementById('sg-variant').onclick=function(ev){
+    var b=ev.target.closest('button');if(!b)return;
+    this.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
+    S.variant=b.getAttribute('data-v');S.page=1;paint();
+  };
+  document.getElementById('sg-status').onclick=function(ev){
+    var b=ev.target.closest('button');if(!b)return;
+    this.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
+    S.status=b.getAttribute('data-s');S.page=1;paint();
+  };
+  cached('sessions','/api/wb-sessions/groups',5000,function(d,stale,err){
+    if(err){document.getElementById('sg-list').innerHTML='<div class="empty">加载失败: '+esc(err.message)+'</div>';return;}
+    S.groups=d.groups||[];paint();
   });
 }
 
@@ -634,45 +704,131 @@ function renderTokenStats(){
 }
 
 /* ================= 页面：积分统计 ================= */
+function consumeChart(daily){
+  if(!daily.length)return '';
+  var W=820,H=180,pad=26,bw=Math.max(10,Math.min(40,(W-pad*2)/daily.length-6));
+  var maxV=1;daily.forEach(function(d){maxV=Math.max(maxV,d.consume);});
+  var svg='<svg class="chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
+  daily.forEach(function(d,i){
+    var x=pad+i*((W-pad*2)/daily.length)+2;
+    var h=Math.max((d.consume/maxV)*(H-46),0.5);
+    svg+='<rect class="bar1" x="'+x+'" y="'+(H-24-h)+'" width="'+bw+'" height="'+h+'" rx="2"><title>'+d.date+' · 消耗 '+d.consume+'</title></rect>';
+    if(daily.length<=16||i%Math.ceil(daily.length/12)===0)
+      svg+='<text x="'+(x+bw/2)+'" y="'+(H-8)+'" text-anchor="middle">'+d.date.slice(5)+'</text>';
+  });
+  svg+='</svg>';
+  return svg;
+}
 function renderCreditStats(){
   var view=document.getElementById('view');
   view.innerHTML='<div class="page-title">积分统计</div>'+
-    '<div class="page-desc" id="cr-note">加载中…</div>'+
-    '<div class="grid cols2" id="cr-grid"></div>';
-  cached('cstats','/api/wb-stats/credit',10000,function(d,stale,err){
-    if(err){document.getElementById('cr-grid').innerHTML='<div class="empty">加载失败: '+esc(err.message)+'</div>';return;}
-    document.getElementById('cr-note').textContent=(stale?'（正在刷新，显示缓存数据）':'')+(d.balance_note||'');
-    var list=d.accounts||[];
-    if(!list.length){document.getElementById('cr-grid').innerHTML='<div class="empty">暂无账号</div>';return;}
-    document.getElementById('cr-grid').innerHTML=list.map(function(a){
-      var ck=a.checkin||{};
-      var dl=daysLeft(a.token_expire_at);
-      var warn=Number(STATE.settings.expiry_warn_days||7);
-      var bal;
-      if(a.remaining!=null){
-        var rem=Number(a.remaining)||0,tot=Number(a.total)||0;
-        var pct=tot>0?Math.max(2,Math.min(100,rem/tot*100)):100;
-        var bcls=rem<=0?'bad':(tot>0&&rem/tot<0.15?'warn':'ok');
-        bal='<div class="rowline"><span class="k">积分余额</span><b>'+fmtTokens(rem)+(tot?(' / '+fmtTokens(tot)):'')+'</b></div>'+
-            '<div class="bar"><i class="'+bcls+'" style="width:'+pct+'%"></i></div>'+
-            (a.expire_at?('<div class="rowline"><span class="k">最早到期</span><span>'+esc(a.expire_at)+'</span></div>'):'');
-      }else{
-        bal='<div class="rowline"><span class="k">积分余额</span><span class="badge">待刷新（回到账号页点「刷新积分」）</span></div>';
-      }
-      return '<div class="card acct">'+
-        '<div class="acct-head"><div class="avatar">'+esc(String(a.nickname||'?').trim().charAt(0)||'?')+'</div>'+
-        '<div style="flex:1"><div class="acct-name">'+esc(a.nickname)+variantBadge(a.variant)+
-        (a.model_enabled?'':'<span class="badge">已停用</span>')+(a.needs_relogin?'<span class="badge bad">需重登</span>':'')+'</div>'+
-        '<div class="acct-meta">'+esc(String(a.uid).slice(0,13))+'…</div></div></div>'+
-        '<div class="rowline"><span class="k">今日签到</span>'+
-          (ck.today_checked_in?'<span class="badge ok">'+ICON.calcheck+'已签 · 连签 '+esc(ck.streak_days??0)+' 天</span>':'<span class="badge">未签</span>')+'</div>'+
-        '<div class="rowline"><span class="k">每日积分</span><b>'+(ck.daily_credit?('+'+esc(ck.daily_credit)):'--')+'</b></div>'+
-        '<div class="rowline"><span class="k">自动签到</span>'+(a.auto_checkin?'<span class="badge ok">开启</span>':'<span class="badge">关闭</span>')+'</div>'+
-        bal+
-        '<div class="rowline"><span class="k">Token 到期</span><span class="'+(dl<warn?'badge bad':'')+'">'+daysText(a.token_expire_at)+'</span></div>'+
-      '</div>';
+    '<div class="toolbar"><div class="seg" id="cr-range">'+
+      '<button data-r="7" class="on">近 7 天</button><button data-r="30">近 30 天</button><button data-r="0">全部</button></div>'+
+      '<span class="spacer"></span><button class="btn" id="cr-refresh">'+ICON.refresh+'刷新统计</button></div>'+
+    '<div class="grid cols3" id="cr-cards"><div class="skl"></div><div class="skl"></div><div class="skl"></div></div>'+
+    '<div class="card"><h3>积分消耗趋势</h3><div id="cr-chart"></div><div class="hint" id="cr-note" style="margin-top:6px"></div></div>'+
+    '<div class="card"><h3>模型构成（按 Token 占比 · 近 30 天）</h3><div id="cr-models"></div></div>'+
+    '<div class="card"><h3>调用明细</h3><div class="table-wrap" id="cr-detail"></div><div id="cr-dpage" style="display:flex;justify-content:center;margin-top:10px"></div></div>';
+  var S={range:7,daily:[],series:{},accounts:[],latest:null,dsort:{key:'ts',dir:-1},dpage:1};
+  function paintStats(){
+    var el=document.getElementById('cr-cards');if(!el)return;
+    var rem=0;S.accounts.forEach(function(a){if(a.remaining!=null)rem+=Number(a.remaining)||0;});
+    var cut=S.range>0?Date.now()-S.range*864e5:0;
+    var daily=S.daily.filter(function(d){return !cut||new Date(d.date+'T00:00:00').getTime()>=cut;});
+    var used=0;daily.forEach(function(d){used+=d.consume;});
+    var pts=0,earliest=null;
+    Object.keys(S.series).forEach(function(k){
+      pts+=S.series[k].length;
+      var p=S.series[k][0];
+      if(p&&(!earliest||p.ts<earliest))earliest=p.ts;
+    });
+    el.innerHTML=
+      '<div class="stat"><div class="k">当前余额</div><div class="v">'+fmtTokens(rem)+'</div><div class="s">'+S.accounts.length+' 个账号</div></div>'+
+      '<div class="stat"><div class="k">区间消耗</div><div class="v">'+fmtTokens(Math.round(used*100)/100)+'</div><div class="s">'+(S.range>0?('近 '+S.range+' 天'):'全部时间')+'</div></div>'+
+      '<div class="stat"><div class="k">采集进度</div><div class="v">'+pts+'</div><div class="s">'+(earliest?('最早快照 '+fmtDate(earliest)):'尚未开始采集')+'</div></div>';
+    var chart=document.getElementById('cr-chart');
+    if(!pts){chart.innerHTML='<div class="empty">尚无积分快照。点右上「刷新统计」立即采集一次，此后每次轮询自动累计。</div>';}
+    else if(!daily.length){chart.innerHTML='<div class="empty">已采集快照，暂未观察到余额下降。</div>';}
+    else chart.innerHTML=consumeChart(daily);
+    document.getElementById('cr-note').textContent='口径与 wb-switch 相同：余额在连续快照间的正差值计为消耗（签到增加不计入）。'+(S.latest?('最近采集 '+fmtDT(S.latest)):'');
+  }
+  function paintModels(){
+    var el=document.getElementById('cr-models');if(!el)return;
+    var ms=(STATE.mshare&&STATE.mshare.by_model)||[];
+    if(!ms.length){el.innerHTML='<div class="empty">暂无调用数据</div>';return;}
+    var tot=0;ms.forEach(function(m){tot+=m.prompt+m.completion;});
+    var maxV=1;ms.forEach(function(m){maxV=Math.max(maxV,m.prompt+m.completion);});
+    el.innerHTML=ms.map(function(m){
+      var v=m.prompt+m.completion;
+      var pct=tot>0?Math.round(v/tot*100):0;
+      var w=Math.round(v/maxV*100);
+      return '<div class="rowline" style="margin:6px 0"><span class="k" style="min-width:180px">'+esc(m.model)+'</span>'+
+        '<div class="bar" style="flex:1"><i style="width:'+Math.max(w,2)+'%"></i></div>'+
+        '<b style="min-width:140px;text-align:right">'+fmtTokens(v)+' · '+pct+'%</b></div>';
     }).join('');
-  });
+  }
+  function paintDetail(){
+    var el=document.getElementById('cr-detail');if(!el)return;
+    var recs=(STATE.cdetail&&STATE.cdetail.records)||[];
+    if(!recs.length){el.innerHTML='<div class="empty">暂无调用记录</div>';document.getElementById('cr-dpage').style.display='none';return;}
+    var k=S.dsort.key,dir=S.dsort.dir;
+    recs=recs.slice().sort(function(a,b){
+      var va=k==='model'?(a.model||''):(Number(a.ts)||0);
+      var vb=k==='model'?(b.model||''):(Number(b.ts)||0);
+      return (va>vb?1:va<vb?-1:0)*dir;
+    });
+    var PS=20,pages=Math.max(1,Math.ceil(recs.length/PS));
+    if(S.dpage>pages)S.dpage=pages;
+    var slice=recs.slice((S.dpage-1)*PS,S.dpage*PS);
+    el.innerHTML='<table><thead><tr>'+
+      '<th class="sortable" data-k="ts">请求时间'+(k==='ts'?(dir<0?' ↓':' ↑'):'')+'</th>'+
+      '<th class="sortable" data-k="model">模型'+(k==='model'?(dir<0?' ↓':' ↑'):'')+'</th>'+
+      '<th>账号</th><th class="num">输入</th><th class="num">输出</th><th>状态</th></tr></thead><tbody>'+
+      slice.map(function(r){
+        return '<tr><td>'+fmtDT(r.ts)+'</td><td>'+esc(r.model)+'</td><td>'+esc(r.account)+'</td>'+
+          '<td class="num">'+fmtTokens(r.prompt_tokens)+'</td><td class="num">'+fmtTokens(r.completion_tokens)+'</td>'+
+          '<td>'+(r.status==='ok'?'<span class="badge ok">ok</span>':'<span class="badge bad">'+esc(r.status||'err')+'</span>')+'</td></tr>';
+      }).join('')+'</tbody></table>';
+    var pg=document.getElementById('cr-dpage');
+    if(pages>1){
+      pg.style.display='flex';
+      pg.innerHTML='<div class="seg"><button data-p="prev"'+(S.dpage<=1?' disabled':'')+'>上一页</button>'+
+        '<button disabled style="border:0;background:none;cursor:default">'+S.dpage+' / '+pages+'</button>'+
+        '<button data-p="next"'+(S.dpage>=pages?' disabled':'')+'>下一页</button></div>';
+    }else{pg.style.display='none';pg.innerHTML='';}
+    el.onclick=function(ev){
+      var pb=ev.target.closest('[data-p]');
+      if(pb){S.dpage+=(pb.getAttribute('data-p')==='next')?1:-1;paintDetail();return;}
+      var th=ev.target.closest('.sortable');if(!th)return;
+      var nk=th.getAttribute('data-k');
+      if(S.dsort.key===nk)S.dsort.dir*=-1;else{S.dsort.key=nk;S.dsort.dir=-1;}
+      S.dpage=1;paintDetail();
+    };
+  }
+  document.getElementById('cr-range').onclick=function(ev){
+    var b=ev.target.closest('button');if(!b)return;
+    this.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
+    S.range=Number(b.getAttribute('data-r'))||0;paintStats();
+  };
+  document.getElementById('cr-refresh').onclick=function(){
+    var btn=this;btn.disabled=true;
+    toast('正在采集账号积分…');
+    api('/api/wb-credits/refresh',{method:'POST'}).then(function(){
+      invalidate('cstats');invalidate('mshare');invalidate('cdetail');
+      loadCreditData();toast('已采集并刷新统计','ok');
+    }).catch(function(e){toast('采集失败: '+e.message,'bad');})
+    .finally(function(){btn.disabled=false;});
+  };
+  function loadCreditData(){
+    cached('cstats','/api/wb-stats/credit',10000,function(d,stale,err){
+      if(err){document.getElementById('cr-cards').innerHTML='<div class="empty">加载失败: '+esc(err.message)+'</div>';return;}
+      S.daily=d.daily||[];S.series=d.series||{};S.accounts=d.accounts||[];S.latest=d.latest_collect_at||null;
+      paintStats();
+    });
+    cached('mshare','/api/wb-stats/token?days=30',15000,function(d){if(d){STATE.mshare=d;paintModels();}});
+    cached('cdetail','/api/wb-sessions?limit=300',8000,function(d){if(d){STATE.cdetail=d;paintDetail();}});
+  }
+  loadCreditData();
 }
 
 /* ================= 页面：设置 ================= */
