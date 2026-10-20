@@ -90,6 +90,7 @@ curl -X POST -u admin:密码 http://127.0.0.1:8000/api/wb-accounts/import-token 
 
 - **侧边栏折叠**：左上角 ☰ 按钮可折叠/展开侧边栏（仅留图标），状态存 localStorage 刷新后保持。
 - **模型分类**：`/v1/models` 中 `owned_by` 区分两池（`trae` / `workbuddy`）；支持 `?owner=trae|workbuddy` 过滤；对外模型名前缀 `wb-`（国内池）/ `wbi-`（国际池）天然分离。
+- **模型分类字段（A+B）**：每个模型对象附加 `platform`（trae/workbuddy）、`pool`（cn/ai，仅 wb 模型）、`display_name`（如 `DeepSeek V3.2 · WorkBuddy`）；响应顶层另附 `groups` 分组索引（`{"trae": [...], "workbuddy": [...]}`）。均为附加字段，OpenAI 协议要求的 `data` 平铺结构不变，标准客户端零影响。
 - **加载速度**：账号/会话/Token 统计/积分统计四页采用 stale-while-revalidate 本地缓存 + 骨架屏——点击导航先渲染缓存数据（瞬间），后台再拉新覆盖；服务端接口实测 13-40ms，瓶颈在前端往返，现已消除。
 - **主题/密度/自动签到等**设置项保存在服务端 `data/wb_settings.json`，对所有访问者生效。
 

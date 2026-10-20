@@ -13001,6 +13001,55 @@ async def status():
     }
 
 
+_MODEL_BRAND_CASE = {
+    "deepseek": "DeepSeek", "kimi": "Kimi", "gpt": "GPT", "aws": "AWS",
+    "sdk": "SDK", "grok": "Grok", "doubao": "Doubao", "glm": "GLM",
+    "gemini": "Gemini", "llama": "Llama", "qwen": "Qwen", "o": "o",
+}
+
+
+def _pretty_model_name(mid: str) -> str:
+    """模型 id → 展示名：去掉 wb-/wbi- 前缀，分隔符转空格，版本号保持原样。"""
+    name = re.sub(r"^(wbi|wb)-", "", mid)
+    name = name.replace("_", " ").replace("-", " ")
+    out = []
+    for w in name.split():
+        lw = w.lower()
+        if lw in _MODEL_BRAND_CASE:
+            out.append(_MODEL_BRAND_CASE[lw])
+        elif re.fullmatch(r"v\d+(\.\d+)*", w):
+            out.append(w[:1].upper() + w[1:])
+        elif w and w[0].isalpha():
+            out.append(w[0].upper() + w[1:])
+        else:
+            out.append(w)
+    return " ".join(out)
+
+
+def _tag_model_platform(m: dict) -> dict:
+    """A 方案：给模型对象附加 platform / pool / display_name 分类字段。
+
+    纯附加字段，不改变 OpenAI 协议要求的原有键，标准客户端零影响。
+    """
+    m = dict(m)
+    owned = str(m.get("owned_by") or "trae").lower()
+    mid = str(m.get("id") or "")
+    if owned.startswith("workbuddy"):
+        m["platform"] = "workbuddy"
+        prefix_ai = getattr(wb_models, "MODEL_PREFIX_AI", "wbi-")
+        if mid.startswith(prefix_ai):
+            m["pool"] = "ai"
+            label = "WorkBuddy 国际"
+        else:
+            m["pool"] = "cn"
+            label = "WorkBuddy"
+    else:
+        m["platform"] = "trae"
+        label = "Trae"
+    m["display_name"] = (_pretty_model_name(mid) + " · " + label).strip()
+    return m
+
+
 @app.get("/v1/models")
 async def models(request: Request):
     force = request.query_params.get("refresh", "").lower() in ("1", "true", "yes")
@@ -13021,7 +13070,12 @@ async def models(request: Request):
     if owner:
         # 按池过滤：owner=trae / owner=workbuddy / owner=workbuddy-ai
         items = [m for m in items if owner in str(m.get("owned_by") or "").lower()]
-    return {"object": "list", "data": items}
+    items = [_tag_model_platform(m) for m in items]
+    groups: dict[str, list[str]] = {}
+    for m in items:
+        groups.setdefault(str(m.get("platform") or "trae"), []).append(str(m.get("id")))
+    # B 方案：顶层 groups 为分类索引；data 仍为 OpenAI 协议要求的平铺数组
+    return {"object": "list", "data": items, "groups": groups}
 
 
 @app.get("/models")
