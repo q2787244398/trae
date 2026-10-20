@@ -13309,8 +13309,8 @@ function loadAccounts(){
       var ckTxt=(ck.active===undefined&&ck.today_checked_in===undefined)?'--':
         (ck.today_checked_in?'✅ 今日已签'+(ck.streak_days?(' · 连签 '+ck.streak_days+' 天'):'')+(ck.daily_credit?(' · +'+ck.daily_credit):''):'未签到');
       var err=a.last_error?('<span class="tag err">'+esc(String(a.last_error).slice(0,40))+(a.consecutive_failures?(' ×'+a.consecutive_failures):'')+'</span>'):'<span class="mut">-</span>';
-      var btns='<button class="btn-sm" onclick="toggleAcc(\''+esc(a.uid)+'\','+(!a.model_enabled)+')">'+(a.model_enabled?'停用':'启用')+'</button> '
-             +'<button class="dg" onclick="delAcc(\''+esc(a.uid)+'\',\''+esc(a.nickname_plain)+'\')">删除</button>';
+      var btns='<button data-act="toggle" data-uid="'+esc(a.uid)+'" data-on="'+(a.model_enabled?'1':'0')+'">'+(a.model_enabled?'停用':'启用')+'</button> '
+             +'<button class="dg" data-act="del" data-uid="'+esc(a.uid)+'" data-nick="'+esc(a.nickname_plain)+'">删除</button>';
       h+='<tr><td><b>'+esc(a.nickname_plain)+'</b><br><span class="mut">'+esc(String(a.uid).slice(0,10))+'… · '+esc(a.domain||'')+'</span></td>'
         +'<td>'+st+'</td><td>'+fmtTime(a.expires_at)+'<br><span class="mut">'+daysLeft(a.expires_at)+'</span></td>'
         +'<td>'+ckTxt+'</td><td>'+err+'</td><td style="white-space:nowrap">'+btns+'</td></tr>';
@@ -13369,6 +13369,16 @@ function addAccount(btn){
     },3000);
   }).catch(function(e){btn.disabled=false;msg('top-msg','发起登录失败: '+e.message,'bad');});
 }
+document.getElementById('acc-table').addEventListener('click',function(ev){
+  var t=ev.target;
+  if(!t||!t.closest)return;
+  var b=t.closest('button[data-act]');
+  if(!b)return;
+  var uid=b.getAttribute('data-uid')||'';
+  var act=b.getAttribute('data-act');
+  if(act==='toggle')toggleAcc(uid,b.getAttribute('data-on')==='1');
+  else if(act==='del')delAcc(uid,b.getAttribute('data-nick')||'');
+});
 loadAll();
 </script>
 </body>
