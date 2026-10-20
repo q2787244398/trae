@@ -30,13 +30,30 @@ wb 池共 **10 个**模型，全部经真实流式推理 200 验证（2026-10-21
 | `wb-kimi-k2.6` / `wb-kimi-k2.5` | Kimi K2 系列 |
 | `wb-auto` | 网关自动路由 |
 
-调用方式与 Trae 池完全一致（同地址同 API Key），仅模型名带 `wb-` 前缀：
+## 双端口分域（v1 = Trae / v2 = WorkBuddy）
+
+两池通过**同域名不同版本前缀**完全分离，客户端分别配置 base URL 即可：
+
+| 端点 | 池 | 说明 |
+|---|---|---|
+| `GET /v1/models` | Trae（66 个） | 只列 Trae 模型 |
+| `POST /v1/chat/completions` | Trae | 兼容历史：`wb-*` 模型名仍会被路由到 WorkBuddy 池 |
+| `GET /v2/models` | WorkBuddy（10 个） | 只列 `wb-*` 模型 |
+| `POST /v2/chat/completions` | WorkBuddy | **严格隔离**：模型名可用 `wb-*` 或裸名（自动补前缀），Trae 模型名一律 400 拒绝 |
 
 ```bash
+# Trae 池（base URL 配 http://127.0.0.1:8000/v1）
 curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Authorization: Bearer $RELAY_API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"wb-deepseek-v3.2","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hi"}]}'
+
+# WorkBuddy 池（base URL 配 http://127.0.0.1:8000/v2）
+curl http://127.0.0.1:8000/v2/chat/completions \
+  -H "Authorization: Bearer $RELAY_API_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v3.2","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+`/v2/models` 响应仍带 `platform/pool/display_name` 附加字段与顶层 `groups` 索引；`/v1/models` 不再混入 wb 模型。
 
 非流式请求由网关自动聚合上游流式响应（上游仅支持 stream，错误码 11101），并回传官方精确 `usage`（含 `credit` 计量）。
 
@@ -82,7 +99,7 @@ curl -X POST -u admin:密码 http://127.0.0.1:8000/api/wb-accounts/import-token 
 
 后台协程每 10 分钟自动拉取 `POST /v2/billing/meter/checkin-activity-status`（实测可用），结果存入账号 `quota_cache.checkin`（`active / today_checked_in / streak_days / daily_credit`）。
 
-## 积分余额（已打通）
+## 积分余额（已打通，口径与桌面客户端一致）
 
 积分余额通过 `POST /v2/billing/meter/get-user-resource` 获取，实测可用。关键点：请求必须同时携带以下头，缺一个都会返回 403/10085：
 
@@ -92,7 +109,12 @@ curl -X POST -u admin:密码 http://127.0.0.1:8000/api/wb-accounts/import-token 
 - `X-Domain`（签发 token 的域，按 wb-switch 的 `api_base_for` 规则）
 - `Origin` / `Referer`
 
-响应解析为 `quota_cache.packages`（每个资源包的 PackageName / CapacityRemain / CapacitySize / CycleEndTime），并汇总出 `remaining / total / expire_at`（最早到期）。账号卡片与积分统计页展示余额进度条、资源包数与最早到期时间。
+**口径说明（重要）**：解析逻辑对齐桌面客户端 `resolveResourceCapacity`：
+
+- 普通资源包用计费周期精确值 `CycleCapacityRemainPrecise`（支持小数，如 385.42）；
+- **体验包（CapacityType=4）按时间片计量**：优先取 `SlicePeriodUsageDetails[0]` 当日切片，否则取 `CycleCapacityRemainPrecise`。顶层 `CapacityRemain` 是整包总容量剩余，直接用会虚高（例：体验包标称 500 但今日周期已用完，客户端显示 0，旧解析显示 500——这正是后台与客户端数字对不上的主因）；
+- `remaining` = 各包客户端口径剩余之和（与客户端显示一致）；`total` = 本期已发放周期总量；`official_total` 保留上游 `TotalDosage` 原值供参考；
+- 后台显示为轮询/手动刷新时的快照，客户端为实时——点击「刷新积分」可立即同步。
 
 ## UI 与体验
 

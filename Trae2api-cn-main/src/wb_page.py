@@ -249,6 +249,7 @@ function fmtDate(ms){if(!ms)return '--';var d=new Date(Number(ms));return d.getF
 function fmtDT(ms){if(!ms)return '--';var d=new Date(Number(ms));return fmtDate(ms)+' '+pad2(d.getHours())+':'+pad2(d.getMinutes());}
 function daysLeft(ms){if(!ms)return 0;return (Number(ms)-Date.now())/864e5;}
 function fmtTokens(n){n=Number(n)||0;if(n>=1e9)return (n/1e9).toFixed(2)+'B';if(n>=1e6)return (n/1e6).toFixed(2)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(n);}
+function fmtCredits(n){n=Number(n)||0;var v=Math.round(n*100)/100;return (v%1===0)?String(v):v.toFixed(2);}
 function daysText(ms){var v=daysLeft(ms);if(!ms)return '--';return v>=0?v.toFixed(1)+' 天':'已过期';}
 
 /* ================= 主题 ================= */
@@ -399,7 +400,7 @@ function paintAccounts(){
       var rem=Number(qc.remaining)||0,tot=Number(qc.total)||0;
       var pct=tot>0?Math.max(2,Math.min(100,rem/tot*100)):100;
       var bcls=rem<=0?'bad':(tot>0&&rem/tot<0.15?'warn':'ok');
-      bar='<div class="rowline"><span class="k">积分余额'+(qc.packages&&qc.packages.length?('（'+qc.packages.length+' 个资源包）'):'')+'</span><b>'+fmtTokens(rem)+(tot?(' / '+fmtTokens(tot)):'')+'</b></div>'+
+      bar='<div class="rowline"><span class="k">积分余额'+(qc.package_count?('（'+qc.package_count+' 个资源包）'):(qc.packages&&qc.packages.length?('（'+qc.packages.length+' 个资源包）'):''))+'</span><b>'+fmtCredits(rem)+(tot?(' / '+fmtCredits(tot)):'')+'</b></div>'+
           '<div class="bar"><i class="'+bcls+'" style="width:'+pct+'%"></i></div>'+
           (qc.expire_at?('<div class="rowline"><span class="k">最早到期</span><span>'+esc(qc.expire_at)+'</span></div>'):'');
     }else{
@@ -486,7 +487,7 @@ function detailDialog(a){
   var pk=(a.quota_cache&&a.quota_cache.packages)||[];
   var pkHtml=pk.length?
     '<div class="section-title" style="margin-top:12px">资源包明细</div><table><thead><tr><th>名称</th><th class="num">剩余</th><th class="num">总量</th><th>到期</th></tr></thead><tbody>'+
-    pk.map(function(p){return '<tr><td>'+esc(p.name)+'</td><td class="num">'+esc(p.remain)+'</td><td class="num">'+esc(p.size)+'</td><td>'+esc(p.expire||'--')+'</td></tr>';}).join('')+'</tbody></table>':'';
+    pk.map(function(p){return '<tr><td>'+esc(p.name)+(p.daily?' <span class="badge">按日</span>':'')+'</td><td class="num">'+esc(p.remain_precise!=null?fmtCredits(p.remain_precise):p.remain)+'</td><td class="num">'+esc(p.size)+'</td><td>'+esc(p.expire||'--')+'</td></tr>';}).join('')+'</tbody></table>':'';
   openModal('<h3>账号详情<button class="x" onclick="closeModal()">✕</button></h3>'+
     '<div class="rowline"><span class="k">昵称</span><b>'+esc(a.nickname_plain)+'</b></div>'+
     '<div class="rowline"><span class="k">UID</span><span>'+esc(a.uid)+'</span></div>'+
@@ -743,8 +744,8 @@ function renderCreditStats(){
       if(p&&(!earliest||p.ts<earliest))earliest=p.ts;
     });
     el.innerHTML=
-      '<div class="stat"><div class="k">当前余额</div><div class="v">'+fmtTokens(rem)+'</div><div class="s">'+S.accounts.length+' 个账号</div></div>'+
-      '<div class="stat"><div class="k">区间消耗</div><div class="v">'+fmtTokens(Math.round(used*100)/100)+'</div><div class="s">'+(S.range>0?('近 '+S.range+' 天'):'全部时间')+'</div></div>'+
+      '<div class="stat"><div class="k">当前余额</div><div class="v">'+fmtCredits(rem)+'</div><div class="s">'+S.accounts.length+' 个账号</div></div>'+
+      '<div class="stat"><div class="k">区间消耗</div><div class="v">'+fmtCredits(used)+'</div><div class="s">'+(S.range>0?('近 '+S.range+' 天'):'全部时间')+'</div></div>'+
       '<div class="stat"><div class="k">采集进度</div><div class="v">'+pts+'</div><div class="s">'+(earliest?('最早快照 '+fmtDate(earliest)):'尚未开始采集')+'</div></div>';
     var chart=document.getElementById('cr-chart');
     if(!pts){chart.innerHTML='<div class="empty">尚无积分快照。点右上「刷新统计」立即采集一次，此后每次轮询自动累计。</div>';}

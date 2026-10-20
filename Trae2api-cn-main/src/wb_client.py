@@ -300,28 +300,51 @@ async def fetch_credits(acct: dict[str, Any]) -> dict[str, Any]:
                 body = resp.json()
                 d0 = (((body.get("data") or {}).get("Response") or {}).get("Data") or {})
                 accts = d0.get("Accounts") or []
-                total = int(d0.get("TotalDosage") or 0)
-                remain_sum = 0
+                official_total = d0.get("TotalDosage")
+
+                def _f(v: Any) -> float:
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        return 0.0
+
+                remain_sum = 0.0
+                cycle_total_sum = 0.0
                 for a in accts:
                     if not isinstance(a, dict):
                         continue
-                    try:
-                        remain_sum += int(a.get("CapacityRemain") or 0)
-                    except (TypeError, ValueError):
-                        pass
+                    # 对齐桌面端 resolveResourceCapacity 口径：
+                    # 体验包(CapacityType=4)按时间片(SlicePeriodUsageDetails)计量，
+                    # 其余包用计费周期精确值(Cycle*Precise)。
+                    # 注意：顶层 CapacityRemain 是"包总容量剩余"，体验包会虚高。
+                    ctype = int(a.get("CapacityType") or 0)
+                    sl = a.get("SlicePeriodUsageDetails")
+                    sl0 = sl[0] if isinstance(sl, list) and sl else None
+                    if ctype == 4 and isinstance(sl0, dict):
+                        pkg_total = _f(sl0.get("SlicePeriodCapacitySizePrecise"))
+                        pkg_left = _f(sl0.get("SlicePeriodCapacityRemainPrecise"))
+                    else:
+                        pkg_total = _f(a.get("CycleCapacitySizePrecise"))
+                        pkg_left = _f(a.get("CycleCapacityRemainPrecise"))
+                    remain_sum += pkg_left
+                    cycle_total_sum += pkg_total
                     packages.append({
                         "name": str(a.get("PackageName") or "未命名资源包"),
                         "remain": a.get("CapacityRemain"),
                         "size": a.get("CapacitySize"),
                         "used": a.get("CapacityUsed"),
+                        "remain_precise": round(pkg_left, 2),
                         "unit": str(a.get("CapacityUnit") or "credits"),
                         "expire": str(a.get("CycleEndTime") or ""),
                         "status": a.get("Status"),
+                        "type": ctype,
+                        "daily": ctype == 4,
                     })
                     end = str(a.get("CycleEndTime") or "")
                     if end and (earliest is None or end < earliest):
                         earliest = end
-                remaining = remain_sum
+                remaining = round(remain_sum, 2)
+                total = round(cycle_total_sum, 2)
             else:
                 logger.warning("wb-client: resource http=%s uid=%s",
                                resp.status_code, acct.get("uid"))
@@ -342,6 +365,8 @@ async def fetch_credits(acct: dict[str, Any]) -> dict[str, Any]:
     return {
         "remaining": remaining,
         "total": total,
+        "official_total": official_total,
+        "package_count": len(packages),
         "packages": packages[:12],
         "expire_at": earliest,
         "checked_at": int(time.time() * 1000),

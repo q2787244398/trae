@@ -610,6 +610,7 @@ PUBLIC_PATHS = {
     "/favicon.ico",
     "/v1/status",
     "/v1/models",
+    "/v2/models",
     "/models",
     "/web/login",
     "/web/login/download",
@@ -11641,7 +11642,7 @@ async def _handle_wb_chat(req: Request, *, body: dict, model: str, messages: lis
                          "api_error", "wb_pool_unavailable")
 
 
-async def handle_chat(req: Request):
+async def handle_chat(req: Request, *, pool: str = "auto"):
     request_id = "req-" + uuid_mod.uuid4().hex
     try:
         body, _body_bytes = await _read_json_body(
@@ -11722,7 +11723,24 @@ async def handle_chat(req: Request):
         options,
         requested_session_id=requested_session_id,
     )
-    if _wb_provider_enabled() and wb_models.is_wb_model(model):
+    if pool == "wb" and not _wb_provider_enabled():
+        return _openai_error(503, "WorkBuddy pool is not configured", "api_error")
+    if _wb_provider_enabled() and (pool == "wb" or wb_models.is_wb_model(model)):
+        if pool == "wb":
+            # /v2 端点强制 WorkBuddy 池：裸名（如 kimi-k3）自动补 wb- 前缀，
+            # 并以模型目录为白名单——目录外的名字（含 wb-* 假前缀）一律拒绝
+            known = {str(m.get("id")) for m in wb_models.openai_models()}
+            cand = str(model).strip()
+            if not wb_models.is_wb_model(cand):
+                cand = "wb-" + cand
+            if cand in known:
+                model = cand
+            else:
+                return _openai_error(
+                    400,
+                    f"model '{model}' is not in the WorkBuddy pool; see GET /v2/models",
+                    "invalid_request_error",
+                )
         return await _handle_wb_chat(
             req, body=body, model=model, messages=messages,
             stream=stream, options=options, request_id=request_id,
@@ -13050,17 +13068,19 @@ def _tag_model_platform(m: dict) -> dict:
     return m
 
 
-@app.get("/v1/models")
-async def models(request: Request):
+async def _models_payload(request: Request, pool: str = "all"):
+    """pool: 'trae' 仅 Trae 池 / 'workbuddy' 仅 WorkBuddy 池 / 'all' 合并（兼容别名）。"""
     force = request.query_params.get("refresh", "").lower() in ("1", "true", "yes")
     owner = request.query_params.get("owner", "").strip().lower()
-    try:
-        items = await trae_client.get_models(force=force)
-    except Exception as e:
-        items = []
-        if not _wb_provider_enabled():
-            return _openai_error(502, str(e), "api_error")
-    if _wb_provider_enabled():
+    items: list = []
+    if pool in ("trae", "all"):
+        try:
+            items = await trae_client.get_models(force=force)
+        except Exception as e:
+            items = []
+            if not _wb_provider_enabled():
+                return _openai_error(502, str(e), "api_error")
+    if _wb_provider_enabled() and pool in ("workbuddy", "all"):
         try:
             if force:
                 await wb_models.refresh_from_config()
@@ -13075,7 +13095,26 @@ async def models(request: Request):
     for m in items:
         groups.setdefault(str(m.get("platform") or "trae"), []).append(str(m.get("id")))
     # B 方案：顶层 groups 为分类索引；data 仍为 OpenAI 协议要求的平铺数组
-    return {"object": "list", "data": items, "groups": groups}
+    return {"object": "list", "data": items, "groups": groups, "pool": pool}
+
+
+@app.get("/v1/models")
+async def models(request: Request):
+    # v1 = Trae 池专属；WorkBuddy 池请使用 /v2/models
+    return await _models_payload(request, pool="trae")
+
+
+@app.get("/v2/models")
+async def models_v2(request: Request):
+    # v2 = WorkBuddy 池专属（wb-* 模型，与 Trae 池完全分离）
+    return await _models_payload(request, pool="workbuddy")
+
+
+@app.get("/models")
+async def models_compat(request: Request):
+    """Unversioned discovery alias used by some TraeWork model forms."""
+
+    return await _models_payload(request, pool="trae")
 
 
 @app.get("/models")
@@ -13105,6 +13144,23 @@ async def chat_completions_compat(req: Request):
     """OpenAI-compatible alias for custom-model base URLs without ``/v1``."""
 
     return await handle_chat(req)
+
+
+@app.post("/v2")
+async def chat_v2(req: Request):
+    return await handle_chat(req, pool="wb")
+
+
+@app.post("/v2/chat")
+async def chat_v2_chat(req: Request):
+    return await handle_chat(req, pool="wb")
+
+
+@app.post("/v2/chat/completions")
+async def chat_completions_v2(req: Request):
+    """WorkBuddy 池专属聊天端点：模型名可用 wb-* 或裸名，Trae 模型在此拒绝。"""
+
+    return await handle_chat(req, pool="wb")
 
 
 @app.post("/api/ide/v2/llm_raw_chat")
