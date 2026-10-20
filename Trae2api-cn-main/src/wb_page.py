@@ -291,6 +291,7 @@ var NAVS=[
   {hash:'/sessions',label:'关联会话',icon:ICON.link},
   {hash:'/token-stats',label:'Token 统计',icon:ICON.chart},
   {hash:'/credit-stats',label:'积分统计',icon:ICON.sparkles},
+  {hash:'/hub',label:'Hub 看板',icon:ICON.zap},
   {hash:'/settings',label:'设置',icon:ICON.settings}
 ];
 function route(){
@@ -308,9 +309,20 @@ function route(){
   if(h==='/sessions')return renderSessions();
   if(h==='/token-stats')return renderTokenStats();
   if(h==='/credit-stats')return renderCreditStats();
+  if(h==='/hub')return renderHub();
   if(h==='/settings')return renderSettings();
 }
 window.addEventListener('hashchange',route);
+
+/* ================= 页面：Hub 看板（workbuddy2api-hub 独立网关） ================= */
+function renderHub(){
+  var view=document.getElementById('view');
+  view.innerHTML='<div class="page-title">Hub 看板</div>'+
+    '<div class="page-desc">workbuddy2api-hub 独立网关（127.0.0.1:8788）：Responses 协议 / 限额护栏 / 成长任务与猫猫旅行 / 用量估价。与 Trae2api 池按账号分工，避免双调度冲突。</div>'+
+    '<div class="toolbar"><a class="btn" href="http://127.0.0.1:8788/?pwd=admin" target="_blank" rel="noopener">'+ICON.plus+'新窗口打开</a>'+
+    '<span class="hint" style="align-self:center">看板默认密码 admin，请在 Hub 设置页尽快修改</span></div>'+
+    '<div class="card" style="padding:0;overflow:hidden"><iframe src="http://127.0.0.1:8788/?pwd=admin" style="width:100%;height:calc(100vh - 230px);border:0;display:block" title="workbuddy2api-hub dashboard"></iframe></div>';
+}
 
 /* ================= 页面：账号管理 ================= */
 function variantBadge(v){return v==='ai'?'<span class="badge info">国际版</span>':'<span class="badge">国内版</span>';}
