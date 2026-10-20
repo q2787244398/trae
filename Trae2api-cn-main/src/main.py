@@ -67,11 +67,6 @@ from . import (
     trae_remote_client,
     traework_compat,
     traework_native_bridge,
-    wb_client,
-    wb_models,
-    wb_polling,
-    wb_settings,
-    wb_store,
 )
 from .auth_helper import (
     SUPPORTED_KINDS as HELPER_KINDS,
@@ -610,12 +605,10 @@ PUBLIC_PATHS = {
     "/favicon.ico",
     "/v1/status",
     "/v1/models",
-    "/v2/models",
     "/models",
     "/web/login",
     "/web/login/download",
     "/web/login/helper-info",
-    "/web/wb",
     "/authorize",
     "/api/web-auth",
     "/api/logout",
@@ -1993,7 +1986,7 @@ def _web_login_html() -> str:
     <button class="nav-item" role="tab" data-tab="settings" data-title="轮询与设置" onclick="switchTab('settings')">{ic['sliders-horizontal']}<span>轮询与设置</span></button>
     <button class="nav-item" role="tab" data-tab="models" data-title="模型测试" onclick="switchTab('models')">{ic['activity']}<span>模型测试</span></button>
     <button class="nav-item" role="tab" data-tab="model-list" data-title="模型列表" onclick="switchTab('model-list')">{ic['list']}<span>模型列表</span></button>
-    <button class="nav-item" role="tab" data-tab="workbuddy" data-title="WorkBuddy" onclick="switchTab('workbuddy')">{ic['coins']}<span>WorkBuddy</span></button>
+    <button class="nav-item" role="tab" data-tab="hub" data-title="Hub 看板" onclick="switchTab('hub')">{ic['zap']}<span>Hub 看板</span></button>
   </nav>
   <div class="sidebar-foot"><span>Trae2api-cn</span><span>v{APP_VERSION}</span></div>
 </aside>
@@ -2392,8 +2385,16 @@ def _web_login_html() -> str:
 </div>
 </div>
 
-<div class="tab-page" data-page="workbuddy">
-<iframe id="wb-frame" src="/web/wb" title="WorkBuddy 管理" style="width:100%;height:calc(100vh - 150px);min-height:540px;border:0;border-radius:14px"></iframe>
+<div class="tab-page" data-page="hub">
+<iframe id="hub-frame" title="workbuddy2api-hub 看板" style="width:100%;height:calc(100vh - 150px);min-height:540px;border:0;border-radius:14px"></iframe>
+<script>
+(function(){{
+  var f=document.getElementById('hub-frame'); if(!f) return;
+  var h=location.hostname;
+  var base=(h==='127.0.0.1'||h==='localhost')?'http://127.0.0.1:8788':'https://'+h+':8443';
+  f.src=base+'/?pwd=hrd3xPcaoqsAVYPu';
+}})();
+</script>
 </div>
 
 </div>
@@ -11491,158 +11492,7 @@ async def _handle_traework_custom(
     )
 
 
-def _wb_provider_enabled() -> bool:
-    return os.environ.get("WB_PROVIDER_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _wb_sse_headers() -> dict[str, str]:
-    return _sse_headers()
-
-
-def _wb_estimate_tokens(text: str) -> int:
-    return max(1, int(len(text) / 3.5)) if text else 0
-
-
-def _wb_openai_error(status: int, message: str, err_type: str = "api_error", code: str = ""):
-    return _openai_error(status, message, err_type, code or None)
-
-
-async def _wb_collect_stream(acct: dict, payload: dict, model: str) -> dict:
-    """上游仅支持流式：聚合 SSE 为一个完整 OpenAI 响应（非流请求用）。"""
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    chunk_id = ""
-    created = 0
-    upstream_model = ""
-    finish_reason = None
-    usage = None
-    async for chunk_bytes in wb_client.chat_stream(acct, payload):
-        for line in chunk_bytes.decode("utf-8", "replace").splitlines():
-            line = line.strip()
-            if not line or line.startswith(":"):
-                continue
-            if not line.startswith("data:"):
-                continue
-            data_str = line[5:].strip()
-            if data_str == "[DONE]":
-                continue
-            try:
-                chunk = json.loads(data_str)
-            except Exception:
-                continue
-            chunk_id = chunk.get("id") or chunk_id
-            created = int(chunk.get("created") or created)
-            upstream_model = str(chunk.get("model") or upstream_model)
-            if isinstance(chunk.get("usage"), dict):
-                usage = chunk["usage"]
-            for choice in chunk.get("choices") or []:
-                delta = choice.get("delta") or {}
-                if delta.get("content"):
-                    content_parts.append(str(delta["content"]))
-                if delta.get("reasoning_content"):
-                    reasoning_parts.append(str(delta["reasoning_content"]))
-                if choice.get("finish_reason"):
-                    finish_reason = choice.get("finish_reason")
-    content = "".join(content_parts)
-    reasoning = "".join(reasoning_parts)
-    message: dict[str, object] = {"role": "assistant", "content": content}
-    if reasoning:
-        message["reasoning_content"] = reasoning
-    prompt_est = _wb_estimate_tokens(json.dumps(payload.get("messages") or [], ensure_ascii=False))
-    comp_est = _wb_estimate_tokens(content) + _wb_estimate_tokens(reasoning)
-    if not isinstance(usage, dict):
-        usage = {"prompt_tokens": prompt_est, "completion_tokens": comp_est,
-                 "total_tokens": prompt_est + comp_est}
-    return {
-        "id": chunk_id or ("chatcmpl-wb-" + uuid_mod.uuid4().hex[:24]),
-        "object": "chat.completion",
-        "created": created or int(time.time()),
-        "model": model,
-        "choices": [{"index": 0, "message": message,
-                     "finish_reason": finish_reason or "stop"}],
-        "usage": usage,
-        "_upstream_model": upstream_model,
-    }
-
-
-async def _handle_wb_chat(req: Request, *, body: dict, model: str, messages: list,
-                          stream: bool, options: dict, request_id: str):
-    """WorkBuddy 池的 OpenAI 兼容入口（wb- 前缀模型）。"""
-    payload = {
-        "model": wb_models.upstream_model(model),
-        "messages": messages,
-        "stream": True,  # 上游仅支持流式（错误码 11101）
-    }
-    variant = wb_models.variant_of(model)
-    for key in ("temperature", "top_p", "max_tokens", "max_completion_tokens",
-                "presence_penalty", "frequency_penalty", "stop", "tools", "tool_choice"):
-        if key in body and body[key] is not None:
-            payload[key] = body[key]
-    if stream and body.get("stream_options") is not None:
-        payload["stream_options"] = body["stream_options"]
-
-    tried: set[str] = set()
-    last_error: str = "wb pool unavailable"
-    pool_size = len(wb_store.accounts()) or 1
-    backoff = 1.0
-    for _attempt in range(max(pool_size, 1)):
-        acct = wb_polling.pick_account(exclude_uids=tried, variant=variant)
-        if not acct:
-            break
-        uid = str(acct.get("uid"))
-        tried.add(uid)
-        try:
-            await wb_client.ensure_fresh(acct)
-            if stream:
-                async def _gen():
-                    est_completion = 0
-                    try:
-                        async for chunk in wb_client.chat_stream(acct, payload):
-                            est_completion += len(chunk)
-                            yield chunk
-                    finally:
-                        wb_client.mark_success(uid)
-                        wb_store.record_usage(
-                            uid, model, True,
-                            prompt_tokens=_wb_estimate_tokens(json.dumps(messages, ensure_ascii=False)),
-                            completion_tokens=max(1, est_completion // 4),
-                        )
-                return StreamingResponse(
-                    _gen(),
-                    media_type="text/event-stream",
-                    headers=_sse_headers(),
-                )
-            result = await _wb_collect_stream(acct, payload, model)
-            wb_client.mark_success(uid)
-            wb_store.record_usage(uid, model, False,
-                                  prompt_tokens=result["usage"]["prompt_tokens"],
-                                  completion_tokens=result["usage"]["completion_tokens"])
-            result.pop("_upstream_model", None)
-            return JSONResponse(result)
-        except wb_client.WbAccountDead as exc:
-            last_error = f"account {uid[:8]} dead: {exc}"
-            logger.warning("wb-chat: %s (request %s)", last_error, request_id)
-        except wb_client.WbRateLimited as exc:
-            last_error = f"account {uid[:8]} rate limited"
-            logger.warning("wb-chat: 429 on %s, backoff %.1fs", uid[:8], backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
-        except wb_client.WbError as exc:
-            if "11102" in str(exc) or "not found" in str(exc):
-                return _openai_error(400, f"model [{model}] unavailable on WorkBuddy: {exc}",
-                                     "invalid_request_error")
-            last_error = f"account {uid[:8]} error: {exc}"
-            logger.warning("wb-chat: %s", last_error)
-            wb_client._mark_failure(uid, str(exc)[:120])
-        except Exception as exc:
-            last_error = f"account {uid[:8]} exception: {exc}"
-            logger.exception("wb-chat: unexpected error (request %s)", request_id)
-            wb_client._mark_failure(uid, str(exc)[:120])
-    return _openai_error(503, f"WorkBuddy pool unavailable: {last_error}",
-                         "api_error", "wb_pool_unavailable")
-
-
-async def handle_chat(req: Request, *, pool: str = "auto"):
+async def handle_chat(req: Request):
     request_id = "req-" + uuid_mod.uuid4().hex
     try:
         body, _body_bytes = await _read_json_body(
@@ -11723,28 +11573,6 @@ async def handle_chat(req: Request, *, pool: str = "auto"):
         options,
         requested_session_id=requested_session_id,
     )
-    if pool == "wb" and not _wb_provider_enabled():
-        return _openai_error(503, "WorkBuddy pool is not configured", "api_error")
-    if _wb_provider_enabled() and (pool == "wb" or wb_models.is_wb_model(model)):
-        if pool == "wb":
-            # /v2 端点强制 WorkBuddy 池：裸名（如 kimi-k3）自动补 wb- 前缀，
-            # 并以模型目录为白名单——目录外的名字（含 wb-* 假前缀）一律拒绝
-            known = {str(m.get("id")) for m in wb_models.openai_models()}
-            cand = str(model).strip()
-            if not wb_models.is_wb_model(cand):
-                cand = "wb-" + cand
-            if cand in known:
-                model = cand
-            else:
-                return _openai_error(
-                    400,
-                    f"model '{model}' is not in the WorkBuddy pool; see GET /v2/models",
-                    "invalid_request_error",
-                )
-        return await _handle_wb_chat(
-            req, body=body, model=model, messages=messages,
-            stream=stream, options=options, request_id=request_id,
-        )
     tracker = _UsageTracker(model, req.url.path, stream, options, messages)
     tracker.request_id = request_id
     options["_relay_request_id"] = request_id
@@ -12347,21 +12175,9 @@ async def lifespan(app: FastAPI):
     auto_checkin = asyncio.create_task(_auto_checkin_loop())
     usage_enrichment = asyncio.create_task(_usage_enrichment_loop())
     credit_reconcile = asyncio.create_task(_credit_reconcile_loop())
-    wb_started = False
-    if _wb_provider_enabled():
-        try:
-            wb_polling.start_background()
-            wb_started = True
-        except Exception as exc:
-            logger.error("wb provider background start failed: %s", exc)
     try:
         yield
     finally:
-        if wb_started:
-            try:
-                await wb_polling.stop_background()
-            except Exception:
-                pass
         for reaper in (
             web_reaper,
             terminal_reaper,
@@ -12554,371 +12370,6 @@ _ADMIN_PROTECTED_PATHS = {"/", "/v1/status", "/authorize"}
 _ADMIN_OPEN_PATHS = {"/api/web-auth"}
 
 
-# ---------- WorkBuddy provider 管理端点（受 admin_basic_auth 保护） ----------
-
-@app.get("/api/wb-status")
-async def wb_status():
-    accts = wb_store.accounts()
-    return {
-        "provider_enabled": _wb_provider_enabled(),
-        "polling": wb_store.polling_cfg(),
-        "accounts_total": len(accts),
-        "accounts_eligible": sum(1 for a in accts if not a.get("needs_relogin") and a.get("model_enabled", True)),
-        "models": [m[3:] if m.startswith("wb-") else m for m in [x["id"] for x in wb_models.openai_models()]],
-    }
-
-
-@app.get("/api/wb-accounts")
-async def wb_accounts_list():
-    return {"success": True, "accounts": wb_store.list_sanitized()}
-
-
-@app.post("/api/wb-accounts/{uid}/enable")
-async def wb_account_enable(uid: str):
-    return {"success": wb_store.set_enabled(uid, True)}
-
-
-@app.post("/api/wb-accounts/{uid}/disable")
-async def wb_account_disable(uid: str):
-    return {"success": wb_store.set_enabled(uid, False)}
-
-
-@app.delete("/api/wb-accounts/{uid}")
-async def wb_account_delete(uid: str):
-    return {"success": wb_store.remove(uid)}
-
-
-@app.post("/api/wb-accounts/import-token")
-async def wb_accounts_import_token(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        return _openai_error(400, "invalid json", "invalid_request_error")
-    token = body.get("token") or {}
-    account = body.get("account") or {}
-    try:
-        rec = wb_store.import_token_payload(token, account, str(body.get("nickname_plain") or ""))
-    except ValueError as exc:
-        return _openai_error(400, str(exc), "invalid_request_error")
-    return {"success": True, "uid": rec.get("uid"), "nickname": rec.get("nickname_plain")}
-
-
-@app.post("/api/wb-auth/login-start")
-async def wb_auth_login_start(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    variant = str(body.get("variant") or "cn") if isinstance(body, dict) else "cn"
-    try:
-        info = wb_client.login_start(variant)
-    except Exception as exc:
-        return _openai_error(502, f"login start failed: {exc}", "api_error")
-    return {"success": True, "state": info["state"], "auth_url": info["auth_url"],
-            "variant": info.get("variant", "cn"), "label": info.get("label", ""),
-            "expires_in": 600}
-
-
-@app.get("/api/wb-auth/login-poll")
-async def wb_auth_login_poll(request: Request):
-    state = str(request.query_params.get("state") or "")
-    if not state:
-        return _openai_error(400, "state required", "invalid_request_error")
-    result = wb_client.login_poll(state)
-    if result.get("status") == "ok":
-        try:
-            rec = wb_store.import_token_payload(result["token"], result.get("account") or {})
-            result["imported"] = True
-            result["uid"] = rec.get("uid")
-            result["nickname"] = rec.get("nickname_plain")
-        except ValueError as exc:
-            result["imported"] = False
-            result["import_error"] = str(exc)
-        result.pop("token", None)
-        result.pop("account", None)
-    return result
-
-
-@app.post("/api/wb-credits/refresh")
-async def wb_credits_refresh():
-    results = []
-    for rec in wb_store.accounts():
-        if not rec.get("model_enabled", True) or rec.get("needs_relogin"):
-            continue
-        try:
-            quota = await wb_client.fetch_credits(rec)
-            rec["quota_cache"] = quota
-            wb_store.record_credit_snapshot(rec.get("uid"), quota.get("remaining"), quota.get("total"))
-            results.append({"uid": rec.get("uid"), "ok": True, "checkin": quota.get("checkin")})
-        except Exception as exc:
-            results.append({"uid": rec.get("uid"), "ok": False, "error": str(exc)[:120]})
-    wb_store.save()
-    return {"success": True, "results": results}
-
-
-@app.post("/api/wb-checkin")
-async def wb_checkin(request: Request):
-    """手动签到：body {uid} 单账号；空 body 签到全部合格账号。"""
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    uid = str(body.get("uid") or "").strip() if isinstance(body, dict) else ""
-    results = []
-    targets = [r for r in wb_store.accounts()
-               if (not uid or str(r.get("uid")) == uid)
-               and not r.get("needs_relogin") and r.get("model_enabled", True)]
-    if uid and not targets:
-        return _openai_error(404, f"account {uid[:8]} not found or not eligible", "invalid_request_error")
-    for rec in targets:
-        try:
-            await wb_client.ensure_fresh(rec)
-            res = await wb_client.checkin(rec)
-            results.append({"uid": rec.get("uid"),
-                            "nickname": rec.get("nickname_plain"), **res})
-        except Exception as exc:
-            results.append({"uid": rec.get("uid"),
-                            "nickname": rec.get("nickname_plain"),
-                            "ok": False, "msg": str(exc)[:120]})
-    return {"success": True, "results": results}
-
-
-@app.get("/api/wb-export")
-async def wb_export(include_tokens: str = "1"):
-    data = wb_store.export_accounts(include_tokens=include_tokens.lower() != "0")
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    return JSONResponse(
-        data,
-        headers={"Content-Disposition": f'attachment; filename="wb-backup-{stamp}.json"'},
-    )
-
-
-@app.post("/api/wb-import")
-async def wb_import(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        return _openai_error(400, "invalid json", "invalid_request_error")
-    overwrite = True
-    if isinstance(payload, dict) and payload.get("overwrite") is False:
-        overwrite = False
-        payload = {k: v for k, v in payload.items() if k != "overwrite"}
-    try:
-        result = wb_store.import_accounts(payload, overwrite=overwrite)
-    except ValueError as exc:
-        return _openai_error(400, str(exc), "invalid_request_error")
-    return {"success": True, **result}
-
-
-def _wb_usage_records() -> list[dict]:
-    try:
-        path = wb_store.USAGE_PATH
-        recs = json.loads(path.read_text("utf-8")) if path.exists() else []
-        return recs if isinstance(recs, list) else []
-    except Exception:
-        return []
-
-
-@app.get("/api/wb-stats/token")
-async def wb_stats_token(days: int = 14):
-    recs = _wb_usage_records()
-    now_ms = int(time.time() * 1000)
-    since = now_ms - max(1, min(days, 90)) * 86400000
-    sel = [r for r in recs if int(r.get("ts") or 0) >= since]
-    by_day: dict[str, dict[str, int]] = {}
-    by_model: dict[str, dict[str, int]] = {}
-    total = {"prompt": 0, "completion": 0, "requests": 0, "errors": 0}
-    today_key = time.strftime("%Y-%m-%d")
-    today = {"prompt": 0, "completion": 0, "requests": 0}
-    for r in sel:
-        day = time.strftime("%Y-%m-%d", time.localtime(int(r.get("ts") or 0) / 1000))
-        p = int(r.get("prompt_tokens") or 0)
-        c = int(r.get("completion_tokens") or 0)
-        bad = 1 if str(r.get("status")) != "ok" else 0
-        slot = by_day.setdefault(day, {"prompt": 0, "completion": 0, "requests": 0})
-        slot["prompt"] += p
-        slot["completion"] += c
-        slot["requests"] += 1
-        mslot = by_model.setdefault(str(r.get("model") or "?"),
-                                    {"prompt": 0, "completion": 0, "requests": 0})
-        mslot["prompt"] += p
-        mslot["completion"] += c
-        mslot["requests"] += 1
-        total["prompt"] += p
-        total["completion"] += c
-        total["requests"] += 1
-        total["errors"] += bad
-        if day == today_key:
-            today["prompt"] += p
-            today["completion"] += c
-            today["requests"] += 1
-    return {"success": True, "days": days,
-            "total": total, "today": today,
-            "by_day": [{"date": k, **v} for k, v in sorted(by_day.items())],
-            "by_model": [{"model": k, **v} for k, v in
-                         sorted(by_model.items(), key=lambda kv: -kv[1]["requests"])]}
-
-
-@app.get("/api/wb-stats/credit")
-async def wb_stats_credit():
-    out = []
-    for rec in wb_store.accounts():
-        qc = rec.get("quota_cache") or {}
-        ck = qc.get("checkin") or {}
-        out.append({
-            "uid": rec.get("uid"), "nickname": rec.get("nickname_plain"),
-            "variant": wb_client.normalize_variant(rec.get("variant")),
-            "model_enabled": rec.get("model_enabled", True),
-            "needs_relogin": rec.get("needs_relogin", False),
-            "auto_checkin": rec.get("auto_checkin", True),
-            "remaining": qc.get("remaining"), "total": qc.get("total"),
-            "expire_at": qc.get("expire_at"),
-            "checkin": {"active": ck.get("active"),
-                        "today_checked_in": ck.get("today_checked_in"),
-                        "streak_days": ck.get("streak_days"),
-                        "daily_credit": ck.get("daily_credit")},
-            "token_expire_at": rec.get("expires_at"),
-        })
-    # 快照序列 + 每日消耗（口径与 wb-switch 相同：连续快照余额正差值 = 消耗）
-    snaps = wb_store.credit_snapshots()
-    series: dict[str, list] = {}
-    for s in snaps:
-        series.setdefault(str(s.get("uid")), []).append(
-            {"ts": int(s.get("ts") or 0), "remaining": s.get("remaining"), "total": s.get("total")})
-    for v in series.values():
-        v.sort(key=lambda x: x["ts"])
-    daily: dict[str, float] = {}
-    for uid, pts in series.items():
-        for prev, cur in zip(pts, pts[1:]):
-            drop = (float(prev.get("remaining") or 0) - float(cur.get("remaining") or 0))
-            if drop > 0:
-                day = time.strftime("%Y-%m-%d", time.localtime(int(cur["ts"]) / 1000))
-                daily[day] = daily.get(day, 0.0) + drop
-    daily_list = [{"date": d, "consume": round(v, 2)} for d, v in sorted(daily.items())]
-    latest_ts = max((int(s.get("ts") or 0) for s in snaps), default=None)
-    return {"success": True, "accounts": out,
-            "daily": daily_list, "series": series,
-            "latest_collect_at": latest_ts,
-            "balance_note": "余额来自上游资源包接口；趋势为快照间余额正差值（与 wb-switch 同口径），首次采集后开始累计"}
-
-
-@app.get("/api/wb-sessions/groups")
-async def wb_sessions_groups(max_groups: int = 120):
-    """关联会话：把调用记录按 账号+模型 且间隔>30min 切分成会话组。"""
-    recs = _wb_usage_records()
-    recs.sort(key=lambda r: int(r.get("ts") or 0))
-    GAP_MS = 30 * 60 * 1000
-    groups: list[dict] = []
-    cur: dict | None = None
-    for r in recs:
-        uid = str(r.get("account_uid"))
-        model = str(r.get("model") or "?")
-        ts = int(r.get("ts") or 0)
-        if cur and cur["uid"] == uid and cur["model"] == model and ts - cur["last_ts"] <= GAP_MS:
-            cur["calls"] += 1
-            cur["prompt"] += int(r.get("prompt_tokens") or 0)
-            cur["completion"] += int(r.get("completion_tokens") or 0)
-            cur["last_ts"] = ts
-            if r.get("status") != "ok":
-                cur["errors"] += 1
-            cur["records"].append(r)
-        else:
-            if cur:
-                groups.append(cur)
-            cur = {"uid": uid, "model": model, "calls": 1,
-                   "prompt": int(r.get("prompt_tokens") or 0),
-                   "completion": int(r.get("completion_tokens") or 0),
-                   "first_ts": ts, "last_ts": ts,
-                   "errors": 1 if r.get("status") != "ok" else 0,
-                   "records": [r]}
-    if cur:
-        groups.append(cur)
-    groups.reverse()  # 最近优先
-    nick = {str(a.get("uid")): str(a.get("nickname_plain") or "?") for a in wb_store.accounts()}
-    out = []
-    for g in groups[:max(1, min(max_groups, 500))]:
-        rec = wb_store.get(g["uid"]) or {}
-        detail = [{"ts": r.get("ts"), "model": r.get("model"), "stream": r.get("stream"),
-                   "prompt_tokens": r.get("prompt_tokens"),
-                   "completion_tokens": r.get("completion_tokens"),
-                   "status": r.get("status"), "error": (r.get("error") or "")[:60]}
-                  for r in reversed(g["records"][-50:])]
-        out.append({
-            "id": f"{g['uid']}:{g['model']}:{g['first_ts']}",
-            "uid": g["uid"], "account": nick.get(g["uid"], "?"),
-            "variant": wb_client.normalize_variant(rec.get("variant")),
-            "model": g["model"], "calls": g["calls"],
-            "prompt_tokens": g["prompt"], "completion_tokens": g["completion"],
-            "first_ts": g["first_ts"], "last_ts": g["last_ts"],
-            "errors": g["errors"], "records": detail,
-        })
-    return {"success": True, "groups": out}
-
-
-@app.get("/api/wb-sessions")
-async def wb_sessions(limit: int = 100):
-    """调用会话：最近的 wb 请求记录（时间/账号/模型/token/状态）。"""
-    recs = _wb_usage_records()[-max(1, min(limit, 500)):]
-    recs = list(reversed(recs))
-    nick = {str(r.get("account_uid")): str((wb_store.get(r.get("account_uid")) or {}).get("nickname_plain") or "?")
-            for r in recs}
-    out = [{"ts": r.get("ts"), "account": nick.get(str(r.get("account_uid")), "?"),
-            "uid": r.get("account_uid"), "model": r.get("model"),
-            "stream": r.get("stream"),
-            "prompt_tokens": r.get("prompt_tokens"),
-            "completion_tokens": r.get("completion_tokens"),
-            "status": r.get("status"), "error": (r.get("error") or "")[:80]}
-           for r in recs]
-    return {"success": True, "records": out}
-
-
-@app.get("/api/wb-settings")
-async def wb_settings_get():
-    return {"success": True, "settings": wb_settings.load(),
-            "accounts": [{"uid": r.get("uid"), "nickname": r.get("nickname_plain"),
-                          "auto_checkin": r.get("auto_checkin", True)}
-                         for r in wb_store.accounts()]}
-
-
-@app.post("/api/wb-settings")
-async def wb_settings_post(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        return _openai_error(400, "invalid json", "invalid_request_error")
-    if not isinstance(body, dict):
-        return _openai_error(400, "body must be object", "invalid_request_error")
-    # 按账号签到黑名单开关走独立接口语义: {"uid": "...", "auto_checkin": bool}
-    if body.get("uid"):
-        ok = wb_store.set_auto_checkin(str(body["uid"]), bool(body.get("auto_checkin", True)))
-        return {"success": ok}
-    settings = wb_settings.save(body)
-    # 轮询设置同步到账号库的 polling（保持单一来源行为一致）
-    try:
-        wb_store.set_polling({"enabled": bool(settings.get("poll_enabled", True)),
-                              "mode": str(settings.get("poll_mode") or "credit-priority")})
-    except Exception:
-        pass
-    try:
-        wb_store.apply_log_retention(int(settings.get("log_retention") or 0))
-    except Exception:
-        pass
-    return {"success": True, "settings": settings}
-
-
-@app.post("/api/wb-polling")
-async def wb_polling_set(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    wb_store.set_polling({
-        "enabled": bool(body.get("enabled", True)),
-        "mode": str(body.get("mode") or "credit-priority"),
-    })
-    return {"success": True, "polling": wb_store.polling_cfg()}
-
-
 @app.middleware("http")
 async def admin_basic_auth(request: Request, call_next):
     if not _ADMIN_USER or not _ADMIN_PASSWORD:
@@ -13045,76 +12496,39 @@ def _pretty_model_name(mid: str) -> str:
 
 
 def _tag_model_platform(m: dict) -> dict:
-    """A 方案：给模型对象附加 platform / pool / display_name 分类字段。
-
-    纯附加字段，不改变 OpenAI 协议要求的原有键，标准客户端零影响。
-    """
+    """给模型对象附加 platform / display_name 分类字段（纯附加，协议零影响）。"""
     m = dict(m)
-    owned = str(m.get("owned_by") or "trae").lower()
     mid = str(m.get("id") or "")
-    if owned.startswith("workbuddy"):
-        m["platform"] = "workbuddy"
-        prefix_ai = getattr(wb_models, "MODEL_PREFIX_AI", "wbi-")
-        if mid.startswith(prefix_ai):
-            m["pool"] = "ai"
-            label = "WorkBuddy 国际"
-        else:
-            m["pool"] = "cn"
-            label = "WorkBuddy"
-    else:
-        m["platform"] = "trae"
-        label = "Trae"
-    m["display_name"] = (_pretty_model_name(mid) + " · " + label).strip()
+    m["platform"] = "trae"
+    m["display_name"] = (_pretty_model_name(mid) + " · Trae").strip()
     return m
 
 
-async def _models_payload(request: Request, pool: str = "all"):
-    """pool: 'trae' 仅 Trae 池 / 'workbuddy' 仅 WorkBuddy 池 / 'all' 合并（兼容别名）。"""
+async def _models_payload(request: Request):
+    """Trae 池模型目录（OpenAI 协议 + platform/display_name 附加字段）。"""
     force = request.query_params.get("refresh", "").lower() in ("1", "true", "yes")
-    owner = request.query_params.get("owner", "").strip().lower()
-    items: list = []
-    if pool in ("trae", "all"):
-        try:
-            items = await trae_client.get_models(force=force)
-        except Exception as e:
-            items = []
-            if not _wb_provider_enabled():
-                return _openai_error(502, str(e), "api_error")
-    if _wb_provider_enabled() and pool in ("workbuddy", "all"):
-        try:
-            if force:
-                await wb_models.refresh_from_config()
-            items = list(items) + wb_models.openai_models()
-        except Exception as exc:
-            logger.warning("wb models merge failed: %s", exc)
-    if owner:
-        # 按池过滤：owner=trae / owner=workbuddy / owner=workbuddy-ai
-        items = [m for m in items if owner in str(m.get("owned_by") or "").lower()]
+    try:
+        items = await trae_client.get_models(force=force)
+    except Exception as e:
+        return _openai_error(502, str(e), "api_error")
     items = [_tag_model_platform(m) for m in items]
     groups: dict[str, list[str]] = {}
     for m in items:
         groups.setdefault(str(m.get("platform") or "trae"), []).append(str(m.get("id")))
-    # B 方案：顶层 groups 为分类索引；data 仍为 OpenAI 协议要求的平铺数组
-    return {"object": "list", "data": items, "groups": groups, "pool": pool}
+    # 顶层 groups 为分类索引；data 仍为 OpenAI 协议要求的平铺数组
+    return {"object": "list", "data": items, "groups": groups, "pool": "trae"}
 
 
 @app.get("/v1/models")
 async def models(request: Request):
-    # v1 = Trae 池专属；WorkBuddy 池请使用 /v2/models
-    return await _models_payload(request, pool="trae")
-
-
-@app.get("/v2/models")
-async def models_v2(request: Request):
-    # v2 = WorkBuddy 池专属（wb-* 模型，与 Trae 池完全分离）
-    return await _models_payload(request, pool="workbuddy")
+    return await _models_payload(request)
 
 
 @app.get("/models")
 async def models_compat(request: Request):
     """Unversioned discovery alias used by some TraeWork model forms."""
 
-    return await _models_payload(request, pool="trae")
+    return await _models_payload(request)
 
 
 @app.get("/models")
@@ -13144,23 +12558,6 @@ async def chat_completions_compat(req: Request):
     """OpenAI-compatible alias for custom-model base URLs without ``/v1``."""
 
     return await handle_chat(req)
-
-
-@app.post("/v2")
-async def chat_v2(req: Request):
-    return await handle_chat(req, pool="wb")
-
-
-@app.post("/v2/chat")
-async def chat_v2_chat(req: Request):
-    return await handle_chat(req, pool="wb")
-
-
-@app.post("/v2/chat/completions")
-async def chat_completions_v2(req: Request):
-    """WorkBuddy 池专属聊天端点：模型名可用 wb-* 或裸名，Trae 模型在此拒绝。"""
-
-    return await handle_chat(req, pool="wb")
 
 
 @app.post("/api/ide/v2/llm_raw_chat")
@@ -13569,13 +12966,6 @@ async def web_login_helper_info(request: Request, relay_param: str = Query("", a
         }
     )
 
-
-from .wb_page import WB_PAGE_HTML  # wb-switch 同款管理页（wb_page.py）
-
-@app.get("/web/wb", response_class=HTMLResponse)
-async def wb_admin_page():
-    """WorkBuddy 账号池管理页（wb-switch 同款 UI，控制台 WorkBuddy 标签页内嵌）。"""
-    return HTMLResponse(WB_PAGE_HTML)
 
 
 @app.get("/authorize", response_class=HTMLResponse)
