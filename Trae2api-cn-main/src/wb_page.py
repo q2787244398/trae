@@ -160,6 +160,17 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .form-row .lbl{font-size:13.5px}
 .form-row .hint{font-size:11.5px;color:var(--muted)}
 .section-title{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin:16px 0 4px}
+/* 侧边栏折叠 */
+.app.mini .sidebar{width:66px;flex-basis:66px;padding:10px 6px}
+.app.mini .brand{flex-direction:column;gap:8px;padding:4px 0 12px}
+.app.mini .brand-name,.app.mini .brand-sub,.app.mini .nav a span,.app.mini .foot-note{display:none}
+.app.mini .brand-mark{width:38px}
+.app.mini .nav a{justify-content:center;padding:11px 0}
+.app.mini .rowline{display:none}
+/* 骨架屏 */
+.skl{height:64px;border-radius:10px;background:var(--chip);background-image:linear-gradient(100deg,transparent 30%,rgba(255,255,255,.35) 50%,transparent 70%);background-size:200% 100%;animation:skl 1.1s infinite}
+html[data-theme="dark"] .skl{background-image:linear-gradient(100deg,transparent 30%,rgba(255,255,255,.07) 50%,transparent 70%)}
+@keyframes skl{0%{background-position:180% 0}100%{background-position:-80% 0}}
 @media (max-width:860px){
   .sidebar{width:64px;flex-basis:64px;padding:10px 6px}
   .brand-name,.brand-sub,.nav a span,.foot-note{display:none}
@@ -175,6 +186,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
     <div class="brand">
       <div class="brand-mark">WB</div>
       <div><div class="brand-name">Trae2api</div><div class="brand-sub">WorkBuddy 账号池</div></div>
+      <button class="btn sm" id="mini-btn" title="折叠/展开侧边栏" style="margin-left:auto">☰</button>
     </div>
     <nav class="nav" id="nav"></nav>
     <div class="sidebar-foot">
@@ -261,6 +273,14 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener && window.mat
 
 /* ================= 状态 & 路由 ================= */
 var STATE={settings:{theme:'system',card_density:'comfortable',expiry_warn_days:7},accounts:[],filter:'all',poll:null,dlgState:null};
+var MEM={};
+function cached(key,path,ttl,cb){
+  var hit=MEM[key];
+  if(hit&&Date.now()-hit.ts<ttl){cb(hit.data,true);}
+  api(path).then(function(d){MEM[key]={ts:Date.now(),data:d};cb(d,false);})
+    .catch(function(e){if(!hit)cb(null,false,e);});
+}
+function invalidate(key){if(key)delete MEM[key];else MEM={};}
 var NAVS=[
   {hash:'/',label:'账号管理',icon:ICON.user},
   {hash:'/sessions',label:'调用会话',icon:ICON.link},
@@ -335,8 +355,10 @@ function renderAccounts(){
   loadAccounts();
 }
 function loadAccounts(){
-  api('/api/wb-accounts').then(function(d){STATE.accounts=d.accounts||[];paintAccounts();})
-    .catch(function(e){document.getElementById('acct-grid').innerHTML='<div class="empty">加载失败: '+esc(e.message)+'</div>';});
+  cached('accounts','/api/wb-accounts',8000,function(d,stale,err){
+    if(err){document.getElementById('acct-grid').innerHTML='<div class="empty">加载失败: '+esc(err.message)+'</div>';return;}
+    STATE.accounts=d.accounts||[];paintAccounts();
+  });
 }
 function visibleAccounts(){
   return STATE.accounts.filter(function(a){
@@ -368,11 +390,14 @@ function paintAccounts(){
       (ck.today_checked_in?'<span class="badge ok">'+ICON.calcheck+'今日已签'+(ck.streak_days?' · 连签 '+ck.streak_days:'')+'</span>':'<span class="badge">今日未签</span>');
     var err=a.last_error?'<span class="badge bad">'+esc(String(a.last_error).slice(0,26))+'</span>':'';
     var bar='';
-    if(a.quota_cache&&a.quota_cache.remaining!=null){
-      var rem=a.quota_cache.remaining,tot=a.quota_total||a.quota_cache.total||0;
+    var qc=a.quota_cache;
+    if(qc&&qc.remaining!=null){
+      var rem=Number(qc.remaining)||0,tot=Number(qc.total)||0;
       var pct=tot>0?Math.max(2,Math.min(100,rem/tot*100)):100;
-      bar='<div class="rowline"><span class="k">剩余积分</span><b>'+esc(rem)+(tot?(' / '+esc(tot)):'')+'</b></div>'+
-          '<div class="bar"><i class="'+(rem<=0?'bad':'ok')+'" style="width:'+pct+'%"></i></div>';
+      var bcls=rem<=0?'bad':(tot>0&&rem/tot<0.15?'warn':'ok');
+      bar='<div class="rowline"><span class="k">积分余额'+(qc.packages&&qc.packages.length?('（'+qc.packages.length+' 个资源包）'):'')+'</span><b>'+fmtTokens(rem)+(tot?(' / '+fmtTokens(tot)):'')+'</b></div>'+
+          '<div class="bar"><i class="'+bcls+'" style="width:'+pct+'%"></i></div>'+
+          (qc.expire_at?('<div class="rowline"><span class="k">最早到期</span><span>'+esc(qc.expire_at)+'</span></div>'):'');
     }else{
       bar='<div class="rowline"><span class="k">签到积分</span><span>'+(ck.daily_credit?('每日 +'+esc(ck.daily_credit)):'--')+
           (ck.active===false?' · <span class="badge warn">活动未开启</span>':'')+'</span></div>';
@@ -437,7 +462,7 @@ function checkinAcc(uid){
     var r=(d.results||[])[0]||{};
     if(r.ok)toast((r.already?'今日已签到':('签到成功'+(r.credit!=null?' +'+r.credit:''))),'ok');
     else toast('签到失败: '+(r.msg||'未知'),'bad');
-    loadAccounts();
+    invalidate('accounts');invalidate('cstats');loadAccounts();
   }).catch(function(e){toast('签到失败: '+e.message,'bad');});
 }
 function refreshAll(btn){
@@ -448,12 +473,16 @@ function refreshAll(btn){
     var ok=0,already=0,bad=0;(d.results||[]).forEach(function(r){if(r.ok){r.already?already++:ok++;}else bad++;});
     el.textContent='';
     toast('签到完成：成功 '+ok+'，已签 '+already+'，失败 '+bad,'ok');
-    loadAccounts();
+    invalidate('accounts');invalidate('cstats');loadAccounts();
   }).catch(function(e){el.textContent='失败: '+e.message;toast('操作失败','bad');})
   .finally(function(){btn.disabled=false;});
 }
 function detailDialog(a){
   var ck=(a.quota_cache&&a.quota_cache.checkin)||{};
+  var pk=(a.quota_cache&&a.quota_cache.packages)||[];
+  var pkHtml=pk.length?
+    '<div class="section-title" style="margin-top:12px">资源包明细</div><table><thead><tr><th>名称</th><th class="num">剩余</th><th class="num">总量</th><th>到期</th></tr></thead><tbody>'+
+    pk.map(function(p){return '<tr><td>'+esc(p.name)+'</td><td class="num">'+esc(p.remain)+'</td><td class="num">'+esc(p.size)+'</td><td>'+esc(p.expire||'--')+'</td></tr>';}).join('')+'</tbody></table>':'';
   openModal('<h3>账号详情<button class="x" onclick="closeModal()">✕</button></h3>'+
     '<div class="rowline"><span class="k">昵称</span><b>'+esc(a.nickname_plain)+'</b></div>'+
     '<div class="rowline"><span class="k">UID</span><span>'+esc(a.uid)+'</span></div>'+
@@ -466,6 +495,7 @@ function detailDialog(a){
     '<div class="rowline"><span class="k">连签天数</span><span>'+esc(ck.streak_days??'-')+'</span></div>'+
     '<div class="rowline"><span class="k">每日积分</span><span>'+(ck.daily_credit?('+'+esc(ck.daily_credit)):'-')+'</span></div>'+
     '<div class="rowline"><span class="k">最近错误</span><span>'+esc(a.last_error||'-')+'</span></div>'+
+    pkHtml+
     '<div class="dlg-foot"><button class="btn" onclick="closeModal()">关闭</button></div>');
 }
 function oauthDialog(){
@@ -544,7 +574,9 @@ function renderSessions(){
   view.innerHTML='<div class="page-title">调用会话</div>'+
     '<div class="page-desc">最近经过本池的 wb 请求记录（原版「关联会话」为桌面客户端功能，服务端以真实调用记录呈现）</div>'+
     '<div class="card"><div class="table-wrap" id="sess-table"><div class="empty">加载中…</div></div></div>';
-  api('/api/wb-sessions?limit=120').then(function(d){
+  cached('sessions','/api/wb-sessions?limit=120',5000,function(d,stale,err){
+    var el=document.getElementById('sess-table');if(!el)return;
+    if(err){el.innerHTML='<div class="empty">'+esc(err.message)+'</div>';return;}
     var recs=d.records||[];
     var el=document.getElementById('sess-table');
     if(!recs.length){el.innerHTML='<div class="empty">还没有调用记录——用 <b>wb-*</b> 模型发一条消息试试。</div>';return;}
@@ -555,7 +587,7 @@ function renderSessions(){
         '<td>'+(r.status==='ok'?'<span class="badge ok">ok</span>':'<span class="badge bad">'+esc(r.status||'err')+'</span>')+'</td></tr>';
     });
     el.innerHTML=h+'</tbody></table>';
-  }).catch(function(e){document.getElementById('sess-table').innerHTML='<div class="empty">'+esc(e.message)+'</div>';});
+  });
 }
 
 /* ================= 页面：Token 统计 ================= */
@@ -585,7 +617,8 @@ function renderTokenStats(){
     '<div class="card"><h3>近 14 天用量</h3><div id="tk-chart"></div>'+
       '<div class="legend"><span><i style="background:var(--primary)"></i>输入</span><span><i style="background:var(--ok)"></i>输出</span></div></div>'+
     '<div class="card"><h3>按模型</h3><div class="table-wrap" id="tk-models"></div></div>';
-  api('/api/wb-stats/token?days=14').then(function(d){
+  cached('tstats','/api/wb-stats/token?days=14',10000,function(d,stale,err){
+    if(err){document.getElementById('tk-cards').innerHTML='<div class="empty">'+esc(err.message)+'</div>';return;}
     document.getElementById('tk-cards').innerHTML=
       '<div class="stat"><div class="k">累计输入</div><div class="v">'+fmtTokens(d.total.prompt)+'</div><div class="s">近 '+d.days+' 天</div></div>'+
       '<div class="stat"><div class="k">累计输出</div><div class="v">'+fmtTokens(d.total.completion)+'</div><div class="s">近 '+d.days+' 天</div></div>'+
@@ -597,7 +630,7 @@ function renderTokenStats(){
       '<table><thead><tr><th>模型</th><th class="num">输入</th><th class="num">输出</th><th class="num">请求</th></tr></thead><tbody>'+
       ms.map(function(m){return '<tr><td>'+esc(m.model)+'</td><td class="num">'+fmtTokens(m.prompt)+'</td><td class="num">'+fmtTokens(m.completion)+'</td><td class="num">'+m.requests+'</td></tr>';}).join('')+'</tbody></table>'
       :'<div class="empty">暂无数据</div>';
-  }).catch(function(e){document.getElementById('tk-cards').innerHTML='<div class="empty">'+esc(e.message)+'</div>';});
+  });
 }
 
 /* ================= 页面：积分统计 ================= */
@@ -606,14 +639,26 @@ function renderCreditStats(){
   view.innerHTML='<div class="page-title">积分统计</div>'+
     '<div class="page-desc" id="cr-note">加载中…</div>'+
     '<div class="grid cols2" id="cr-grid"></div>';
-  api('/api/wb-stats/credit').then(function(d){
-    document.getElementById('cr-note').textContent=d.balance_note||'';
+  cached('cstats','/api/wb-stats/credit',10000,function(d,stale,err){
+    if(err){document.getElementById('cr-grid').innerHTML='<div class="empty">加载失败: '+esc(err.message)+'</div>';return;}
+    document.getElementById('cr-note').textContent=(stale?'（正在刷新，显示缓存数据）':'')+(d.balance_note||'');
     var list=d.accounts||[];
     if(!list.length){document.getElementById('cr-grid').innerHTML='<div class="empty">暂无账号</div>';return;}
     document.getElementById('cr-grid').innerHTML=list.map(function(a){
       var ck=a.checkin||{};
       var dl=daysLeft(a.token_expire_at);
       var warn=Number(STATE.settings.expiry_warn_days||7);
+      var bal;
+      if(a.remaining!=null){
+        var rem=Number(a.remaining)||0,tot=Number(a.total)||0;
+        var pct=tot>0?Math.max(2,Math.min(100,rem/tot*100)):100;
+        var bcls=rem<=0?'bad':(tot>0&&rem/tot<0.15?'warn':'ok');
+        bal='<div class="rowline"><span class="k">积分余额</span><b>'+fmtTokens(rem)+(tot?(' / '+fmtTokens(tot)):'')+'</b></div>'+
+            '<div class="bar"><i class="'+bcls+'" style="width:'+pct+'%"></i></div>'+
+            (a.expire_at?('<div class="rowline"><span class="k">最早到期</span><span>'+esc(a.expire_at)+'</span></div>'):'');
+      }else{
+        bal='<div class="rowline"><span class="k">积分余额</span><span class="badge">待刷新（回到账号页点「刷新积分」）</span></div>';
+      }
       return '<div class="card acct">'+
         '<div class="acct-head"><div class="avatar">'+esc(String(a.nickname||'?').trim().charAt(0)||'?')+'</div>'+
         '<div style="flex:1"><div class="acct-name">'+esc(a.nickname)+variantBadge(a.variant)+
@@ -623,11 +668,11 @@ function renderCreditStats(){
           (ck.today_checked_in?'<span class="badge ok">'+ICON.calcheck+'已签 · 连签 '+esc(ck.streak_days??0)+' 天</span>':'<span class="badge">未签</span>')+'</div>'+
         '<div class="rowline"><span class="k">每日积分</span><b>'+(ck.daily_credit?('+'+esc(ck.daily_credit)):'--')+'</b></div>'+
         '<div class="rowline"><span class="k">自动签到</span>'+(a.auto_checkin?'<span class="badge ok">开启</span>':'<span class="badge">关闭</span>')+'</div>'+
-        '<div class="rowline"><span class="k">积分余额</span><span>'+(a.remaining!=null?esc(a.remaining):'<span class="badge">待上游开放</span>')+'</span></div>'+
+        bal+
         '<div class="rowline"><span class="k">Token 到期</span><span class="'+(dl<warn?'badge bad':'')+'">'+daysText(a.token_expire_at)+'</span></div>'+
       '</div>';
     }).join('');
-  }).catch(function(e){document.getElementById('cr-grid').innerHTML='<div class="empty">'+esc(e.message)+'</div>';});
+  });
 }
 
 /* ================= 页面：设置 ================= */
@@ -697,11 +742,20 @@ function renderSettings(){
 }
 
 /* ================= 启动 ================= */
-api('/api/wb-settings').then(function(d){
-  STATE.settings=Object.assign(STATE.settings,d.settings||{});
-  applyTheme(STATE.settings.theme||'system');
-  route();
-}).catch(function(){applyTheme('system');route();});
+(function(){
+  try{if(localStorage.getItem('wb-mini')==='1')document.querySelector('.app').classList.add('mini');}catch(e){}
+  var mb=document.getElementById('mini-btn');
+  if(mb)mb.onclick=function(){
+    var app=document.querySelector('.app');
+    app.classList.toggle('mini');
+    try{localStorage.setItem('wb-mini',app.classList.contains('mini')?'1':'0');}catch(e){}
+  };
+  api('/api/wb-settings').then(function(d){
+    STATE.settings=Object.assign(STATE.settings,d.settings||{});
+    applyTheme(STATE.settings.theme||'system');
+    route();
+  }).catch(function(){applyTheme('system');route();});
+})();
 </script>
 </body>
 </html>

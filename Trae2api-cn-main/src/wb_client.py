@@ -248,36 +248,107 @@ def mark_success(uid: str) -> None:
         wb_store.save()
 
 
+_WEB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
+
+
+def _resource_base(acct: dict[str, Any]) -> tuple[str, str]:
+    """余额端点基址与 X-Domain：须与 token 签发域一致（wb-switch api_base_for 同款规则）。"""
+    domain = str(acct.get("domain") or "").strip().lower()
+    if domain.endswith("workbuddy.ai"):
+        return "https://www.workbuddy.ai", "www.workbuddy.ai"
+    return "https://www.codebuddy.cn", "www.codebuddy.cn"
+
+
+def _xuid(acct: dict[str, Any]) -> str:
+    uid = str(acct.get("uid") or "").strip()
+    if uid:
+        return uid
+    claims = _jwt_claims(str(acct.get("access_token") or ""))
+    return str(claims.get("uid") or claims.get("sub") or "")
+
+
 async def fetch_credits(acct: dict[str, Any]) -> dict[str, Any]:
-    """拉取账号状态/积分信号（P0 实测：
-    - POST /v2/billing/meter/checkin-activity-status → 200（签到状态，含 daily_credit）
-    - POST /billing/meter/get-user-resource-summary → 403/10085（web 令牌域受限，暂不用）
-    返回 quota_cache 形态；余额未知时 remaining=None，轮询器自动退化为轮转。"""
+    """拉取积分余额（get-user-resource，2026-10-20 实测 200）+ 签到状态。
+
+    关键配方（缺一即 403/10085）：Chrome UA + X-Client-Platform: web +
+    X-User-Id + X-Domain（与 token 签发域一致）+ Origin/Referer。
+    返回 quota_cache 形态；余额解析失败时 remaining=None（轮询退化为轮转）。
+    """
     headers = build_headers(acct)
     headers["X-Client-Platform"] = "web"
-    origin = _bases(acct)["plugin"].rsplit("/v2", 1)[0]
-    headers["Origin"] = origin
-    headers["Referer"] = f"{origin}/profile/plans-usage"
+    headers["User-Agent"] = _WEB_UA
+    base, xdom = _resource_base(acct)
+    headers["X-Domain"] = xdom
+    headers["X-User-Id"] = _xuid(acct)
+    headers["Origin"] = base
+    headers["Referer"] = base + "/profile/plans-usage"
+
+    remaining: Any = None
+    total: Any = None
+    packages: list[dict[str, Any]] = []
+    earliest: Any = None
+    ck_body: dict[str, Any] = {}
+    dead = False
     async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(f"{_bases(acct)['meter']}/checkin-activity-status", headers=headers, json={})
-    if resp.status_code == 401:
+        try:
+            resp = await client.post(base + "/v2/billing/meter/get-user-resource",
+                                     headers=headers, json={})
+            if resp.status_code == 401:
+                dead = True
+            elif resp.status_code == 200:
+                body = resp.json()
+                d0 = (((body.get("data") or {}).get("Response") or {}).get("Data") or {})
+                accts = d0.get("Accounts") or []
+                total = int(d0.get("TotalDosage") or 0)
+                remain_sum = 0
+                for a in accts:
+                    if not isinstance(a, dict):
+                        continue
+                    try:
+                        remain_sum += int(a.get("CapacityRemain") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    packages.append({
+                        "name": str(a.get("PackageName") or "未命名资源包"),
+                        "remain": a.get("CapacityRemain"),
+                        "size": a.get("CapacitySize"),
+                        "used": a.get("CapacityUsed"),
+                        "unit": str(a.get("CapacityUnit") or "credits"),
+                        "expire": str(a.get("CycleEndTime") or ""),
+                        "status": a.get("Status"),
+                    })
+                    end = str(a.get("CycleEndTime") or "")
+                    if end and (earliest is None or end < earliest):
+                        earliest = end
+                remaining = remain_sum
+            else:
+                logger.warning("wb-client: resource http=%s uid=%s",
+                               resp.status_code, acct.get("uid"))
+        except Exception as exc:
+            logger.warning("wb-client: resource error uid=%s (%s)", acct.get("uid"), exc)
+        try:
+            resp2 = await client.post(_bases(acct)["meter"] + "/checkin-activity-status",
+                                      headers=headers, json={})
+            if resp2.status_code == 401:
+                dead = True
+            elif resp2.status_code == 200:
+                ck_body = resp2.json()
+        except Exception as exc:
+            logger.warning("wb-client: checkin-status error uid=%s (%s)", acct.get("uid"), exc)
+    if dead:
         raise WbAccountDead("credits 401")
-    try:
-        body = resp.json()
-    except Exception:
-        raise WbError(f"credits bad json http={resp.status_code}", status=502)
-    if body.get("code") not in (0, None):
-        raise WbError(f"credits code={body.get('code')}", status=502)
-    data = body.get("data") or {}
+    ck_data = ck_body.get("data") or {}
     return {
-        "remaining": None,           # 余额端点待官方域开放；保持 None → 轮转模式
-        "total": None,
-        "expire_at": data.get("expireAt"),
+        "remaining": remaining,
+        "total": total,
+        "packages": packages[:12],
+        "expire_at": earliest,
         "checked_at": int(time.time() * 1000),
-        "checkin": {"active": data.get("active"),
-                    "today_checked_in": data.get("today_checked_in"),
-                    "streak_days": data.get("streak_days"),
-                    "daily_credit": data.get("daily_credit")},
+        "checkin": {"active": ck_data.get("active"),
+                    "today_checked_in": ck_data.get("today_checked_in"),
+                    "streak_days": ck_data.get("streak_days"),
+                    "daily_credit": ck_data.get("daily_credit")},
     }
 
 
@@ -362,6 +433,9 @@ async def checkin(acct: dict[str, Any]) -> dict[str, Any]:
     """
     headers = build_headers(acct)
     headers["X-Client-Platform"] = "web"
+    headers["User-Agent"] = _WEB_UA
+    headers["X-Domain"] = _resource_base(acct)[1]
+    headers["X-User-Id"] = _xuid(acct)
     origin = _bases(acct)["plugin"].rsplit("/v2", 1)[0]
     headers["Origin"] = origin
     headers["Referer"] = f"{origin}/profile/plans-usage"

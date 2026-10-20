@@ -72,7 +72,26 @@ curl -X POST -u admin:密码 http://127.0.0.1:8000/api/wb-accounts/import-token 
 
 ## 签到状态
 
-后台协程每 10 分钟自动拉取 `POST /v2/billing/meter/checkin-activity-status`（实测可用），结果存入账号 `quota_cache.checkin`（`active / today_checked_in / streak_days / daily_credit`）。积分余额接口（`get-user-resource-summary`）当前对 OAuth 明文 token 返回 403/10085（网关域校验），轮询器自动退化为轮转模式，不影响使用。
+后台协程每 10 分钟自动拉取 `POST /v2/billing/meter/checkin-activity-status`（实测可用），结果存入账号 `quota_cache.checkin`（`active / today_checked_in / streak_days / daily_credit`）。
+
+## 积分余额（已打通）
+
+积分余额通过 `POST /v2/billing/meter/get-user-resource` 获取，实测可用。关键点：请求必须同时携带以下头，缺一个都会返回 403/10085：
+
+- Chrome UA（`Mozilla/5.0 ... Chrome/152.0.0.0 Safari/537.36`）
+- `X-Client-Platform: web`
+- `X-User-Id`（JWT 中的 uid）
+- `X-Domain`（签发 token 的域，按 wb-switch 的 `api_base_for` 规则）
+- `Origin` / `Referer`
+
+响应解析为 `quota_cache.packages`（每个资源包的 PackageName / CapacityRemain / CapacitySize / CycleEndTime），并汇总出 `remaining / total / expire_at`（最早到期）。账号卡片与积分统计页展示余额进度条、资源包数与最早到期时间。
+
+## UI 与体验
+
+- **侧边栏折叠**：左上角 ☰ 按钮可折叠/展开侧边栏（仅留图标），状态存 localStorage 刷新后保持。
+- **模型分类**：`/v1/models` 中 `owned_by` 区分两池（`trae` / `workbuddy`）；支持 `?owner=trae|workbuddy` 过滤；对外模型名前缀 `wb-`（国内池）/ `wbi-`（国际池）天然分离。
+- **加载速度**：账号/会话/Token 统计/积分统计四页采用 stale-while-revalidate 本地缓存 + 骨架屏——点击导航先渲染缓存数据（瞬间），后台再拉新覆盖；服务端接口实测 13-40ms，瓶颈在前端往返，现已消除。
+- **主题/密度/自动签到等**设置项保存在服务端 `data/wb_settings.json`，对所有访问者生效。
 
 ## 免责声明
 

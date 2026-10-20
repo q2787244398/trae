@@ -12761,7 +12761,7 @@ async def wb_stats_credit():
             "token_expire_at": rec.get("expires_at"),
         })
     return {"success": True, "accounts": out,
-            "balance_note": "积分余额端点暂被上游 10085 限制，以签到/到期数据为主"}
+            "balance_note": "积分余额来自上游资源包接口（get-user-resource），为各资源包剩余量汇总"}
 
 
 @app.get("/api/wb-sessions")
@@ -12931,6 +12931,7 @@ async def status():
 @app.get("/v1/models")
 async def models(request: Request):
     force = request.query_params.get("refresh", "").lower() in ("1", "true", "yes")
+    owner = request.query_params.get("owner", "").strip().lower()
     try:
         items = await trae_client.get_models(force=force)
     except Exception as e:
@@ -12944,6 +12945,9 @@ async def models(request: Request):
             items = list(items) + wb_models.openai_models()
         except Exception as exc:
             logger.warning("wb models merge failed: %s", exc)
+    if owner:
+        # 按池过滤：owner=trae / owner=workbuddy / owner=workbuddy-ai
+        items = [m for m in items if owner in str(m.get("owned_by") or "").lower()]
     return {"object": "list", "data": items}
 
 
