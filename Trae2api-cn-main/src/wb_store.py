@@ -149,6 +149,23 @@ def list_sanitized() -> list[dict[str, Any]]:
 
 # ---------- 导入 ----------
 
+def _jwt_claims(token_str: str) -> dict[str, Any]:
+    """解析 JWT payload（不验签，仅取声明）。"""
+    import base64 as _b64
+    try:
+        p = token_str.split(".")[1]
+        p += "=" * (-len(p) % 4)
+        return json.loads(_b64.urlsafe_b64decode(p))
+    except Exception:
+        return {}
+
+
+def _uid_from_jwt(token_str: str) -> str:
+    """从 access token (JWT) 提取 uid —— /login/account 不返回 uid 时的兑底。"""
+    claims = _jwt_claims(token_str)
+    return str(claims.get("uid") or claims.get("sub") or "").strip()
+
+
 def import_token_payload(token: dict[str, Any], account: dict[str, Any],
                          nickname_plain: str = "") -> dict[str, Any]:
     """将 OAuth (auth/token + login/account) 结果并入账号库。
@@ -161,8 +178,15 @@ def import_token_payload(token: dict[str, Any], account: dict[str, Any],
     if not at or not rt:
         raise ValueError("token payload missing accessToken/refreshToken")
     uid = str(account.get("uid") or token.get("uid") or "").strip()
+    claims: dict[str, Any] = {}
+    if not uid:
+        claims = _jwt_claims(at)
+        uid = str(claims.get("uid") or claims.get("sub") or "").strip()
     if not uid:
         raise ValueError("account payload missing uid")
+    if not nickname_plain and not (account.get("nickname") or account.get("uin")):
+        claims = claims or _jwt_claims(at)
+        nickname_plain = str(claims.get("nickname") or claims.get("preferred_username") or "").strip()
     exp = int(token.get("expiresAt") or 0)
     if not exp:
         exp = _now_ms() + int(float(token.get("expiresIn") or 2419200) * 1000)

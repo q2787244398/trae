@@ -263,8 +263,24 @@ def login_start() -> dict[str, Any]:
     return {"state": state, "auth_url": str(data.get("authUrl") or "")}
 
 
+def _jwt_claims(token_str: str) -> dict[str, Any]:
+    """解析 JWT payload（不验签，仅取声明）。"""
+    import base64 as _b64
+    import json as _json
+    try:
+        p = token_str.split(".")[1]
+        p += "=" * (-len(p) % 4)
+        return _json.loads(_b64.urlsafe_b64decode(p))
+    except Exception:
+        return {}
+
+
 def login_poll(state: str) -> dict[str, Any]:
-    """轮询一次 auth/token。返回 {status: pending|ok|error, ...}。"""
+    """轮询一次 auth/token。返回 {status: pending|ok|error, ...}。
+
+    uid 优先取 /login/account，缺失时回退到 access token (JWT) 的 uid/sub 声明
+    —— 实测 /login/account 可能不返回 uid（2026-10-20 用户扫码导入失败定位）。
+    """
     import httpx as _hx
     r = _hx.get(f"{PLUGIN_BASE}/auth/token?state={state}",
                 headers={"User-Agent": UA}, timeout=15)
@@ -276,9 +292,20 @@ def login_poll(state: str) -> dict[str, Any]:
         try:
             ra = _hx.get(f"{PLUGIN_BASE}/login/account?state={state}",
                          headers={"User-Agent": UA}, timeout=15)
-            acct = (ra.json().get("data") or {})
+            acct = dict(ra.json().get("data") or {})
         except Exception:
-            pass
+            acct = {}
+        claims = _jwt_claims(data["accessToken"])
+        if not acct.get("uid"):
+            uid = claims.get("uid") or claims.get("sub")
+            if uid:
+                acct["uid"] = str(uid)
+        if not acct.get("nickname"):
+            nick = claims.get("nickname") or claims.get("preferred_username")
+            if nick:
+                acct["nickname"] = str(nick)
+        acct.setdefault("uin", str(claims.get("preferred_username") or ""))
+        acct.setdefault("domain", "www.workbuddy.cn")
         return {"status": "ok", "token": data, "account": acct}
     if code == 11217:
         return {"status": "pending"}
