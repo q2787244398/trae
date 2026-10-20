@@ -28,6 +28,37 @@ logger = logging.getLogger("wb-client")
 CHAT_URL = os.environ.get("WB_UPSTREAM_CHAT", "https://copilot.tencent.com/v2/chat/completions")
 PLUGIN_BASE = os.environ.get("WB_PLUGIN_BASE", "https://www.codebuddy.cn/v2/plugin")
 METER_BASE = os.environ.get("WB_METER_BASE", "https://www.codebuddy.cn/v2/billing/meter")
+
+# ---- variant（cn 国内版 / ai 国际版）----
+# ai 端点取自 workbuddy-switch variant.rs；chat 网关为同构推测，待 P0' 实测
+_VARIANT_BASES: dict[str, dict[str, str]] = {
+    "cn": {
+        "chat": CHAT_URL,
+        "plugin": PLUGIN_BASE,
+        "meter": METER_BASE,
+        "platform": "workbuddy",
+        "label": "OAuth 扫码登录",
+    },
+    "ai": {
+        "chat": os.environ.get("WB_UPSTREAM_CHAT_AI", "https://www.codebuddy.ai/v2/chat/completions"),
+        "plugin": os.environ.get("WB_PLUGIN_BASE_AI", "https://www.codebuddy.ai/v2/plugin"),
+        "meter": os.environ.get("WB_METER_BASE_AI", "https://www.codebuddy.ai/v2/billing/meter"),
+        "platform": "workbuddy-ai",
+        "label": "OAuth Web 登录",
+    },
+}
+_LOGIN_STATES: dict[str, str] = {}  # state -> variant
+
+
+def normalize_variant(v: Any) -> str:
+    s = str(v or "cn").strip().lower()
+    return "ai" if s in ("ai", "intl", "global") else "cn"
+
+
+def _bases(acct: dict[str, Any] | None = None, variant: str = "cn") -> dict[str, str]:
+    if acct is not None:
+        return _VARIANT_BASES[normalize_variant(acct.get("variant"))]
+    return _VARIANT_BASES[normalize_variant(variant)]
 IDE_VERSION = os.environ.get("WB_IDE_VERSION", "5.8.3")
 MODEL_PREFIX = os.environ.get("WB_MODEL_PREFIX", "wb-")
 CONNECT_TIMEOUT = float(os.environ.get("WB_CONNECT_TIMEOUT", "10"))
@@ -107,7 +138,7 @@ async def refresh_token(acct: dict[str, Any]) -> bool:
     headers["X-Refresh-Token"] = rt
     headers["X-Auth-Refresh-Source"] = "plugin"
     async with httpx.AsyncClient(timeout=CONNECT_TIMEOUT + 20) as client:
-        resp = await client.post(f"{PLUGIN_BASE}/auth/token/refresh", headers=headers, json={})
+        resp = await client.post(f"{_bases(acct)['plugin']}/auth/token/refresh", headers=headers, json={})
     try:
         body = resp.json()
     except Exception:
@@ -159,7 +190,7 @@ async def chat_stream(acct: dict[str, Any], payload: dict[str, Any]) -> AsyncIte
         timeout = httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT)
         client = httpx.AsyncClient(timeout=timeout)
         try:
-            async with client.stream("POST", CHAT_URL, headers=headers, json=body) as resp:
+            async with client.stream("POST", _bases(acct)["chat"], headers=headers, json=body) as resp:
                 if resp.status_code == 401 and attempt == 0 and not replayed:
                     replayed = True
                     await resp.aread()
@@ -224,11 +255,11 @@ async def fetch_credits(acct: dict[str, Any]) -> dict[str, Any]:
     返回 quota_cache 形态；余额未知时 remaining=None，轮询器自动退化为轮转。"""
     headers = build_headers(acct)
     headers["X-Client-Platform"] = "web"
-    origin = PLUGIN_BASE.rsplit("/v2", 1)[0]
+    origin = _bases(acct)["plugin"].rsplit("/v2", 1)[0]
     headers["Origin"] = origin
     headers["Referer"] = f"{origin}/profile/plans-usage"
     async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(f"{METER_BASE}/checkin-activity-status", headers=headers, json={})
+        resp = await client.post(f"{_bases(acct)['meter']}/checkin-activity-status", headers=headers, json={})
     if resp.status_code == 401:
         raise WbAccountDead("credits 401")
     try:
@@ -250,17 +281,21 @@ async def fetch_credits(acct: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def login_start() -> dict[str, Any]:
-    """发起 OAuth 登录：返回 {state, auth_url}。"""
+def login_start(variant: str = "cn") -> dict[str, Any]:
+    """发起 OAuth 登录：返回 {state, auth_url, variant, label}。"""
     import httpx as _hx
-    r = _hx.post(f"{PLUGIN_BASE}/auth/state?platform=workbuddy",
+    v = normalize_variant(variant)
+    base = _VARIANT_BASES[v]
+    r = _hx.post(f"{base['plugin']}/auth/state?platform={base['platform']}",
                  headers={"User-Agent": UA}, json={}, timeout=15)
     body = r.json()
     data = body.get("data") or {}
     state = str(data.get("state") or "")
     if not state:
         raise WbError(f"auth/state no state: {str(body)[:200]}", status=502)
-    return {"state": state, "auth_url": str(data.get("authUrl") or "")}
+    _LOGIN_STATES[state] = v
+    return {"state": state, "auth_url": str(data.get("authUrl") or data.get("auth_url") or ""),
+            "variant": v, "label": base["label"]}
 
 
 def _jwt_claims(token_str: str) -> dict[str, Any]:
@@ -280,9 +315,12 @@ def login_poll(state: str) -> dict[str, Any]:
 
     uid 优先取 /login/account，缺失时回退到 access token (JWT) 的 uid/sub 声明
     —— 实测 /login/account 可能不返回 uid（2026-10-20 用户扫码导入失败定位）。
+    variant 由 login_start 记录（_LOGIN_STATES），导入时随账号写入账号库。
     """
     import httpx as _hx
-    r = _hx.get(f"{PLUGIN_BASE}/auth/token?state={state}",
+    variant = _LOGIN_STATES.get(state, "cn")
+    base = _VARIANT_BASES[variant]
+    r = _hx.get(f"{base['plugin']}/auth/token?state={state}",
                 headers={"User-Agent": UA}, timeout=15)
     body = r.json()
     code = body.get("code")
@@ -290,7 +328,7 @@ def login_poll(state: str) -> dict[str, Any]:
     if code == 0 and isinstance(data.get("accessToken"), str):
         acct = {}
         try:
-            ra = _hx.get(f"{PLUGIN_BASE}/login/account?state={state}",
+            ra = _hx.get(f"{base['plugin']}/login/account?state={state}",
                          headers={"User-Agent": UA}, timeout=15)
             acct = dict(ra.json().get("data") or {})
         except Exception:
@@ -305,8 +343,49 @@ def login_poll(state: str) -> dict[str, Any]:
             if nick:
                 acct["nickname"] = str(nick)
         acct.setdefault("uin", str(claims.get("preferred_username") or ""))
-        acct.setdefault("domain", "www.workbuddy.cn")
+        if variant == "ai":
+            acct.setdefault("domain", "www.workbuddy.ai")
+        else:
+            acct.setdefault("domain", "www.workbuddy.cn")
+        acct["variant"] = variant
         return {"status": "ok", "token": data, "account": acct}
     if code == 11217:
         return {"status": "pending"}
     return {"status": "error", "code": code, "msg": str(body.get("msg"))[:160]}
+
+
+async def checkin(acct: dict[str, Any]) -> dict[str, Any]:
+    """执行每日签到（POST /v2/billing/meter/daily-checkin）。
+
+    参考 workbuddy-switch checkin.rs：服务端返回"已签到"按成功处理。
+    返回 {ok, already, code, msg, credit}。
+    """
+    headers = build_headers(acct)
+    headers["X-Client-Platform"] = "web"
+    origin = _bases(acct)["plugin"].rsplit("/v2", 1)[0]
+    headers["Origin"] = origin
+    headers["Referer"] = f"{origin}/profile/plans-usage"
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(f"{_bases(acct)['meter']}/daily-checkin",
+                                 headers=headers, json={})
+    if resp.status_code == 401:
+        raise WbAccountDead("checkin 401")
+    try:
+        body = resp.json()
+    except Exception:
+        return {"ok": False, "already": False, "code": resp.status_code,
+                "msg": f"bad json http={resp.status_code}", "credit": None}
+    code = body.get("code")
+    msg = str(body.get("msg") or body.get("message") or "")
+    data = body.get("data") or {}
+    # 0 = 成功；常见"已签到"提示语也按成功处理
+    already = ("已签到" in msg) or ("already" in msg.lower())
+    ok = (code in (0, None)) or already
+    credit = None
+    for key in ("credit", "addCredit", "rewardCredit", "dailyCredit"):
+        if isinstance(data, dict) and data.get(key) is not None:
+            credit = data.get(key)
+            break
+    if not ok and msg:
+        return {"ok": False, "already": False, "code": code, "msg": msg[:120], "credit": None}
+    return {"ok": True, "already": already, "code": code, "msg": msg[:120], "credit": credit}

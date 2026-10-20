@@ -34,6 +34,13 @@ def _empty() -> dict[str, Any]:
     return {"version": 1, "updated_at": _now_ms(), "polling": dict(DEFAULT_POLLING), "accounts": []}
 
 
+def _ensure_defaults(rec: dict[str, Any]) -> dict[str, Any]:
+    """老记录兼容升级：补 variant / auto_checkin 等新字段。"""
+    rec.setdefault("variant", "cn")
+    rec.setdefault("auto_checkin", True)
+    return rec
+
+
 def load(force: bool = False) -> dict[str, Any]:
     global _CACHE
     with _LOCK:
@@ -52,6 +59,8 @@ def load(force: bool = False) -> dict[str, Any]:
         data.setdefault("polling", dict(DEFAULT_POLLING))
         data.setdefault("accounts", [])
         data.setdefault("version", 1)
+        for rec in data["accounts"]:
+            _ensure_defaults(rec)
         _CACHE = data
         return data
 
@@ -217,7 +226,100 @@ def import_token_payload(token: dict[str, Any], account: dict[str, Any],
     return upsert(rec)
 
 
+# ---------- 备份导出 / 导入 ----------
+
+EXPORT_VERSION = 2
+
+
+def export_accounts(include_tokens: bool = True) -> dict[str, Any]:
+    """导出账号库（备份用）。include_tokens=False 时剥离 token（仅配置迁移）。"""
+    data = load()
+    out_accounts: list[dict[str, Any]] = []
+    for rec in data["accounts"]:
+        r = json.loads(json.dumps(rec, ensure_ascii=False))
+        if not include_tokens:
+            r.pop("access_token", None)
+            r.pop("refresh_token", None)
+        out_accounts.append(r)
+    return {"wb_backup_version": EXPORT_VERSION, "exported_at": _now_ms(),
+            "polling": dict(data.get("polling") or {}), "accounts": out_accounts}
+
+
+def import_accounts(payload: dict[str, Any], overwrite: bool = True) -> dict[str, Any]:
+    """从备份导入：按 uid 合并。返回 {added, updated, skipped}。"""
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    accounts = payload.get("accounts")
+    if not isinstance(accounts, list):
+        raise ValueError("payload.accounts must be a list")
+    added = updated = skipped = 0
+    with _LOCK:
+        data = load()
+        known = {str(r.get("uid")) for r in data["accounts"]}
+        for raw in accounts:
+            if not isinstance(raw, dict):
+                skipped += 1
+                continue
+            rec = _ensure_defaults(dict(raw))
+            uid = str(rec.get("uid") or "").strip()
+            if not uid:
+                skipped += 1
+                continue
+            rec["uid"] = uid
+            if uid in known:
+                if not overwrite:
+                    skipped += 1
+                    continue
+                for i, r in enumerate(data["accounts"]):
+                    if str(r.get("uid")) == uid:
+                        data["accounts"][i] = {**r, **rec, "uid": uid}
+                        break
+                updated += 1
+            else:
+                if not rec.get("access_token") or not rec.get("refresh_token"):
+                    skipped += 1
+                    continue
+                data["accounts"].append(rec)
+                known.add(uid)
+                added += 1
+        if payload.get("polling") and isinstance(payload["polling"], dict):
+            data["polling"] = {**dict(DEFAULT_POLLING), **payload["polling"]}
+        save()
+    return {"added": added, "updated": updated, "skipped": skipped}
+
+
+def set_auto_checkin(uid: str, enabled: bool) -> bool:
+    with _LOCK:
+        rec = get(str(uid))
+        if not rec:
+            return False
+        rec["auto_checkin"] = bool(enabled)
+        save()
+        return True
+
+
 # ---------- 用量 ----------
+
+def apply_log_retention(max_records: int) -> int:
+    """按设置裁剪用量记录到最近 N 条；返回裁剪后条数。"""
+    global USAGE_MAX
+    if max_records and int(max_records) > 0:
+        USAGE_MAX = int(max_records)
+    with _LOCK:
+        try:
+            recs = json.loads(USAGE_PATH.read_text("utf-8")) if USAGE_PATH.exists() else []
+        except Exception:
+            return 0
+        if not isinstance(recs, list):
+            return 0
+        if len(recs) <= USAGE_MAX:
+            return len(recs)
+        recs = recs[-USAGE_MAX:]
+        USAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = USAGE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(recs, ensure_ascii=False), "utf-8")
+        tmp.replace(USAGE_PATH)
+        return len(recs)
 
 def record_usage(uid: str, model: str, stream: bool,
                  prompt_tokens: int = 0, completion_tokens: int = 0,

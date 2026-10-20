@@ -77,3 +77,19 @@ curl -X POST -u admin:密码 http://127.0.0.1:8000/api/wb-accounts/import-token 
 ## 免责声明
 
 本扩展仅用于个人学习研究。多账号池化属灰色用法，存在触发官方风控、账号被限制的风险，请自担。请勿商用或分发。
+
+## 同款 UI 与扩展功能（2026-10-20 二期）
+
+管理页 `/web/wb` 已重写为 workbuddy-switch 同款视觉（MIT 设计参考，自研实现，见页脚标注）：
+
+- 左侧边栏 5 页导航：账号管理 / 调用会话 / Token 统计 / 积分统计 / 设置（hash 路由，深浅主题）
+- 账号卡片：积分进度、Token 到期倒计时（可配警示阈值）、今日签到徽章、更多操作菜单、紧凑/宽松密度
+- 添加账号对话框：国内版（扫码）/ 国际版（Web 登录）双入口；国际版账号进入 `wbi-*` 池
+- 手动/批量签到（POST /v2/billing/meter/daily-checkin，"已签到"按成功处理）
+- 每日自动签到协程：时间窗 + 随机抖动 + 按账号黑白名单（设置页可配）
+- 备份导出（GET /api/wb-export）/ 导入（POST /api/wb-import）
+- Token 统计（/api/wb-stats/token，按日/按模型聚合 + SVG 柱状图）、积分统计、调用会话页
+- 设置持久化 data/wb_settings.json：主题、轮询模式、保活阈值（提前 N 天刷新）、签到配置、记录保留条数
+
+新增文件：src/wb_page.py（管理页）、src/wb_settings.py（设置）。
+注意：wb_page.py 整份字符串禁止出现反斜杠（Python 转义会破坏页面 JS，历史 bug 两次验证）。

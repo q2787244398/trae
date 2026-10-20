@@ -70,6 +70,7 @@ from . import (
     wb_client,
     wb_models,
     wb_polling,
+    wb_settings,
     wb_store,
 )
 from .auth_helper import (
@@ -11571,6 +11572,7 @@ async def _handle_wb_chat(req: Request, *, body: dict, model: str, messages: lis
         "messages": messages,
         "stream": True,  # 上游仅支持流式（错误码 11101）
     }
+    variant = wb_models.variant_of(model)
     for key in ("temperature", "top_p", "max_tokens", "max_completion_tokens",
                 "presence_penalty", "frequency_penalty", "stop", "tools", "tool_choice"):
         if key in body and body[key] is not None:
@@ -11583,7 +11585,7 @@ async def _handle_wb_chat(req: Request, *, body: dict, model: str, messages: lis
     pool_size = len(wb_store.accounts()) or 1
     backoff = 1.0
     for _attempt in range(max(pool_size, 1)):
-        acct = wb_polling.pick_account(exclude_uids=tried)
+        acct = wb_polling.pick_account(exclude_uids=tried, variant=variant)
         if not acct:
             break
         uid = str(acct.get("uid"))
@@ -12584,12 +12586,18 @@ async def wb_accounts_import_token(request: Request):
 
 
 @app.post("/api/wb-auth/login-start")
-async def wb_auth_login_start():
+async def wb_auth_login_start(request: Request):
     try:
-        info = wb_client.login_start()
+        body = await request.json()
+    except Exception:
+        body = {}
+    variant = str(body.get("variant") or "cn") if isinstance(body, dict) else "cn"
+    try:
+        info = wb_client.login_start(variant)
     except Exception as exc:
         return _openai_error(502, f"login start failed: {exc}", "api_error")
     return {"success": True, "state": info["state"], "auth_url": info["auth_url"],
+            "variant": info.get("variant", "cn"), "label": info.get("label", ""),
             "expires_in": 600}
 
 
@@ -12627,6 +12635,184 @@ async def wb_credits_refresh():
             results.append({"uid": rec.get("uid"), "ok": False, "error": str(exc)[:120]})
     wb_store.save()
     return {"success": True, "results": results}
+
+
+@app.post("/api/wb-checkin")
+async def wb_checkin(request: Request):
+    """手动签到：body {uid} 单账号；空 body 签到全部合格账号。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    uid = str(body.get("uid") or "").strip() if isinstance(body, dict) else ""
+    results = []
+    targets = [r for r in wb_store.accounts()
+               if (not uid or str(r.get("uid")) == uid)
+               and not r.get("needs_relogin") and r.get("model_enabled", True)]
+    if uid and not targets:
+        return _openai_error(404, f"account {uid[:8]} not found or not eligible", "invalid_request_error")
+    for rec in targets:
+        try:
+            await wb_client.ensure_fresh(rec)
+            res = await wb_client.checkin(rec)
+            results.append({"uid": rec.get("uid"),
+                            "nickname": rec.get("nickname_plain"), **res})
+        except Exception as exc:
+            results.append({"uid": rec.get("uid"),
+                            "nickname": rec.get("nickname_plain"),
+                            "ok": False, "msg": str(exc)[:120]})
+    return {"success": True, "results": results}
+
+
+@app.get("/api/wb-export")
+async def wb_export(include_tokens: str = "1"):
+    data = wb_store.export_accounts(include_tokens=include_tokens.lower() != "0")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return JSONResponse(
+        data,
+        headers={"Content-Disposition": f'attachment; filename="wb-backup-{stamp}.json"'},
+    )
+
+
+@app.post("/api/wb-import")
+async def wb_import(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return _openai_error(400, "invalid json", "invalid_request_error")
+    overwrite = True
+    if isinstance(payload, dict) and payload.get("overwrite") is False:
+        overwrite = False
+        payload = {k: v for k, v in payload.items() if k != "overwrite"}
+    try:
+        result = wb_store.import_accounts(payload, overwrite=overwrite)
+    except ValueError as exc:
+        return _openai_error(400, str(exc), "invalid_request_error")
+    return {"success": True, **result}
+
+
+def _wb_usage_records() -> list[dict]:
+    try:
+        path = wb_store.USAGE_PATH
+        recs = json.loads(path.read_text("utf-8")) if path.exists() else []
+        return recs if isinstance(recs, list) else []
+    except Exception:
+        return []
+
+
+@app.get("/api/wb-stats/token")
+async def wb_stats_token(days: int = 14):
+    recs = _wb_usage_records()
+    now_ms = int(time.time() * 1000)
+    since = now_ms - max(1, min(days, 90)) * 86400000
+    sel = [r for r in recs if int(r.get("ts") or 0) >= since]
+    by_day: dict[str, dict[str, int]] = {}
+    by_model: dict[str, dict[str, int]] = {}
+    total = {"prompt": 0, "completion": 0, "requests": 0, "errors": 0}
+    today_key = time.strftime("%Y-%m-%d")
+    today = {"prompt": 0, "completion": 0, "requests": 0}
+    for r in sel:
+        day = time.strftime("%Y-%m-%d", time.localtime(int(r.get("ts") or 0) / 1000))
+        p = int(r.get("prompt_tokens") or 0)
+        c = int(r.get("completion_tokens") or 0)
+        bad = 1 if str(r.get("status")) != "ok" else 0
+        slot = by_day.setdefault(day, {"prompt": 0, "completion": 0, "requests": 0})
+        slot["prompt"] += p
+        slot["completion"] += c
+        slot["requests"] += 1
+        mslot = by_model.setdefault(str(r.get("model") or "?"),
+                                    {"prompt": 0, "completion": 0, "requests": 0})
+        mslot["prompt"] += p
+        mslot["completion"] += c
+        mslot["requests"] += 1
+        total["prompt"] += p
+        total["completion"] += c
+        total["requests"] += 1
+        total["errors"] += bad
+        if day == today_key:
+            today["prompt"] += p
+            today["completion"] += c
+            today["requests"] += 1
+    return {"success": True, "days": days,
+            "total": total, "today": today,
+            "by_day": [{"date": k, **v} for k, v in sorted(by_day.items())],
+            "by_model": [{"model": k, **v} for k, v in
+                         sorted(by_model.items(), key=lambda kv: -kv[1]["requests"])]}
+
+
+@app.get("/api/wb-stats/credit")
+async def wb_stats_credit():
+    out = []
+    for rec in wb_store.accounts():
+        qc = rec.get("quota_cache") or {}
+        ck = qc.get("checkin") or {}
+        out.append({
+            "uid": rec.get("uid"), "nickname": rec.get("nickname_plain"),
+            "variant": wb_client.normalize_variant(rec.get("variant")),
+            "model_enabled": rec.get("model_enabled", True),
+            "needs_relogin": rec.get("needs_relogin", False),
+            "auto_checkin": rec.get("auto_checkin", True),
+            "remaining": qc.get("remaining"), "total": qc.get("total"),
+            "expire_at": qc.get("expire_at"),
+            "checkin": {"active": ck.get("active"),
+                        "today_checked_in": ck.get("today_checked_in"),
+                        "streak_days": ck.get("streak_days"),
+                        "daily_credit": ck.get("daily_credit")},
+            "token_expire_at": rec.get("expires_at"),
+        })
+    return {"success": True, "accounts": out,
+            "balance_note": "积分余额端点暂被上游 10085 限制，以签到/到期数据为主"}
+
+
+@app.get("/api/wb-sessions")
+async def wb_sessions(limit: int = 100):
+    """调用会话：最近的 wb 请求记录（时间/账号/模型/token/状态）。"""
+    recs = _wb_usage_records()[-max(1, min(limit, 500)):]
+    recs = list(reversed(recs))
+    nick = {str(r.get("account_uid")): str((wb_store.get(r.get("account_uid")) or {}).get("nickname_plain") or "?")
+            for r in recs}
+    out = [{"ts": r.get("ts"), "account": nick.get(str(r.get("account_uid")), "?"),
+            "uid": r.get("account_uid"), "model": r.get("model"),
+            "stream": r.get("stream"),
+            "prompt_tokens": r.get("prompt_tokens"),
+            "completion_tokens": r.get("completion_tokens"),
+            "status": r.get("status"), "error": (r.get("error") or "")[:80]}
+           for r in recs]
+    return {"success": True, "records": out}
+
+
+@app.get("/api/wb-settings")
+async def wb_settings_get():
+    return {"success": True, "settings": wb_settings.load(),
+            "accounts": [{"uid": r.get("uid"), "nickname": r.get("nickname_plain"),
+                          "auto_checkin": r.get("auto_checkin", True)}
+                         for r in wb_store.accounts()]}
+
+
+@app.post("/api/wb-settings")
+async def wb_settings_post(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _openai_error(400, "invalid json", "invalid_request_error")
+    if not isinstance(body, dict):
+        return _openai_error(400, "body must be object", "invalid_request_error")
+    # 按账号签到黑名单开关走独立接口语义: {"uid": "...", "auto_checkin": bool}
+    if body.get("uid"):
+        ok = wb_store.set_auto_checkin(str(body["uid"]), bool(body.get("auto_checkin", True)))
+        return {"success": ok}
+    settings = wb_settings.save(body)
+    # 轮询设置同步到账号库的 polling（保持单一来源行为一致）
+    try:
+        wb_store.set_polling({"enabled": bool(settings.get("poll_enabled", True)),
+                              "mode": str(settings.get("poll_mode") or "credit-priority")})
+    except Exception:
+        pass
+    try:
+        wb_store.apply_log_retention(int(settings.get("log_retention") or 0))
+    except Exception:
+        pass
+    return {"success": True, "settings": settings}
 
 
 @app.post("/api/wb-polling")
@@ -13197,199 +13383,12 @@ async def web_login_helper_info(request: Request, relay_param: str = Query("", a
     )
 
 
-_WB_PAGE_HTML = """<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WorkBuddy 账号池管理</title>
-<style>
-:root{--bg:#f5f6f8;--card:#fff;--tx:#1c2333;--sub:#69708a;--bd:#e3e6ee;--ac:#4f6ef7;--ok:#189a56;--warn:#c47f17;--bad:#cf3f4f;--chip:#eef1f8}
-@media (prefers-color-scheme:dark){:root{--bg:#14161c;--card:#1d2028;--tx:#e8eaf2;--sub:#9aa1b8;--bd:#2b2f3a;--ac:#6b85ff;--ok:#3ecf8e;--warn:#e8b054;--bad:#f07185;--chip:#262a35}}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);padding:20px}
-.wrap{max-width:1080px;margin:0 auto}
-h1{font-size:18px;margin-bottom:4px}
-.sub{color:var(--sub);font-size:12.5px;margin-bottom:16px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.chip{background:var(--chip);border-radius:999px;padding:3px 12px;font-size:12.5px;color:var(--sub)}
-.chip b{color:var(--tx)}
-.chip.g b{color:var(--ok)}.chip.w b{color:var(--warn)}.chip.b b{color:var(--bad)}
-button,.btn{border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer}
-button:hover{border-color:var(--ac);color:var(--ac)}
-button.pri{background:var(--ac);border-color:var(--ac);color:#fff}
-button.pri:hover{opacity:.88;color:#fff}
-button.dg:hover{border-color:var(--bad);color:var(--bad)}
-button:disabled{opacity:.5;cursor:not-allowed}
-select{border:1px solid var(--bd);border-radius:8px;padding:5px 8px;background:var(--card);color:var(--tx);font-size:13px}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
-th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--bd);vertical-align:top}
-th{color:var(--sub);font-weight:600;font-size:12px;white-space:nowrap}
-td .tag{display:inline-block;border-radius:6px;padding:1px 8px;font-size:12px}
-.tag.on{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
-.tag.off{background:var(--chip);color:var(--sub)}
-.tag.err{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
-.mut{color:var(--sub);font-size:12px}
-.msg{margin-top:8px;font-size:12.5px;color:var(--sub);min-height:18px;white-space:pre-wrap}
-.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}
-.linkbox{margin-top:10px;padding:10px 12px;border:1px dashed var(--ac);border-radius:10px;font-size:13px}
-.linkbox a{color:var(--ac);word-break:break-all}
-.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--ac);border-top-color:transparent;border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px;margin-right:6px}
-@keyframes sp{to{transform:rotate(360deg)}}
-.empty{color:var(--sub);padding:18px;text-align:center}
-</style>
-</head>
-<body>
-<div class="wrap">
-<h1>WorkBuddy 账号池</h1>
-<div class="sub">wb-* 前缀模型走本池 · 与 Trae 账号池互相独立 · 接口 /api/wb-*</div>
-
-<div class="card">
-  <div class="row" id="status-row"><span class="chip">加载中…</span></div>
-  <div class="row" style="margin-top:10px">
-    <button class="pri" onclick="addAccount(this)">＋ 添加账号（OAuth 登录）</button>
-    <button onclick="refreshCredits(this)">刷新签到/状态</button>
-    <button onclick="loadAll()">刷新列表</button>
-    <span style="flex:1"></span>
-    <span class="mut">轮询模式：</span>
-    <select id="poll-mode" onchange="setPolling()">
-      <option value="credit-priority">积分优先</option>
-      <option value="round-robin">轮转</option>
-    </select>
-    <label class="mut" style="cursor:pointer"><input type="checkbox" id="poll-on" onchange="setPolling()" style="vertical-align:-2px"> 启用</label>
-  </div>
-  <div id="login-box"></div>
-  <div id="top-msg" class="msg"></div>
-</div>
-
-<div class="card">
-  <div class="row"><b>账号列表</b><span style="flex:1"></span><span class="mut" id="acc-meta"></span></div>
-  <div id="acc-table"></div>
-</div>
-</div>
-
-<script>
-var POLL=null,STATE=null;
-function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-function api(p,opt){
-  return fetch(p,Object.assign({credentials:'same-origin',headers:{'Content-Type':'application/json'}},opt)).then(function(r){
-    if(r.status===401){location.reload();throw new Error('需要重新登录管理台');}
-    return r.json();
-  });
-}
-function msg(id,txt,cls){var el=document.getElementById(id);el.textContent=txt||'';el.className='msg'+(cls?' '+cls:'');}
-function fmtTime(ms){if(!ms)return '--';var d=new Date(Number(ms));return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
-function daysLeft(ms){if(!ms)return '--';var v=(Number(ms)-Date.now())/864e5;return v>=0?v.toFixed(1)+' 天':'已过期';}
-
-function loadAll(){loadStatus();loadAccounts();}
-function loadStatus(){
-  api('/api/wb-status').then(function(d){
-    var row=document.getElementById('status-row');
-    var chips=[];
-    chips.push('<span class="chip '+(d.provider_enabled?'g':'b')+'">Provider <b>'+(d.provider_enabled?'启用':'停用')+'</b></span>');
-    chips.push('<span class="chip">账号 <b>'+d.accounts_total+'</b> 个</span>');
-    chips.push('<span class="chip '+(d.accounts_eligible>0?'g':'w')+'">可用 <b>'+d.accounts_eligible+'</b> 个</span>');
-    chips.push('<span class="chip">wb 模型 <b>'+d.models.length+'</b> 个: '+esc(d.models.join(', '))+'</span>');
-    row.innerHTML=chips.join(' ');
-    document.getElementById('poll-mode').value=d.polling.mode||'credit-priority';
-    document.getElementById('poll-on').checked=!!d.polling.enabled;
-  }).catch(function(e){msg('top-msg','状态加载失败: '+e.message,'bad');});
-}
-function loadAccounts(){
-  api('/api/wb-accounts').then(function(d){
-    var list=d.accounts||[];
-    document.getElementById('acc-meta').textContent='共 '+list.length+' 个';
-    var box=document.getElementById('acc-table');
-    if(!list.length){box.innerHTML='<div class="empty">还没有 WorkBuddy 账号，点上方"添加账号"用 OAuth 登录即可加入池子</div>';return;}
-    var h='<table><thead><tr><th>账号</th><th>状态</th><th>Access 有效期</th><th>签到</th><th>异常</th><th>操作</th></tr></thead><tbody>';
-    list.forEach(function(a){
-      var st=a.needs_relogin?'<span class="tag err">需重新登录</span>':(a.model_enabled?'<span class="tag on">启用</span>':'<span class="tag off">已停用</span>');
-      var ck=(a.quota_cache&&a.quota_cache.checkin)||{};
-      var ckTxt=(ck.active===undefined&&ck.today_checked_in===undefined)?'--':
-        (ck.today_checked_in?'✅ 今日已签'+(ck.streak_days?(' · 连签 '+ck.streak_days+' 天'):'')+(ck.daily_credit?(' · +'+ck.daily_credit):''):'未签到');
-      var err=a.last_error?('<span class="tag err">'+esc(String(a.last_error).slice(0,40))+(a.consecutive_failures?(' ×'+a.consecutive_failures):'')+'</span>'):'<span class="mut">-</span>';
-      var btns='<button data-act="toggle" data-uid="'+esc(a.uid)+'" data-on="'+(a.model_enabled?'1':'0')+'">'+(a.model_enabled?'停用':'启用')+'</button> '
-             +'<button class="dg" data-act="del" data-uid="'+esc(a.uid)+'" data-nick="'+esc(a.nickname_plain)+'">删除</button>';
-      h+='<tr><td><b>'+esc(a.nickname_plain)+'</b><br><span class="mut">'+esc(String(a.uid).slice(0,10))+'… · '+esc(a.domain||'')+'</span></td>'
-        +'<td>'+st+'</td><td>'+fmtTime(a.expires_at)+'<br><span class="mut">'+daysLeft(a.expires_at)+'</span></td>'
-        +'<td>'+ckTxt+'</td><td>'+err+'</td><td style="white-space:nowrap">'+btns+'</td></tr>';
-    });
-    h+='</tbody></table>';
-    box.innerHTML=h;
-  }).catch(function(e){document.getElementById('acc-table').innerHTML='<div class="empty">加载失败: '+esc(e.message)+'</div>';});
-}
-function toggleAcc(uid,on){
-  api('/api/wb-accounts/'+encodeURIComponent(uid)+'/'+(on?'enable':'disable'),{method:'POST'}).then(function(){loadAll();});
-}
-function delAcc(uid,nick){
-  if(!confirm('确定删除账号「'+nick+'」？其 token 将从池中移除。'))return;
-  api('/api/wb-accounts/'+encodeURIComponent(uid),{method:'DELETE'}).then(function(){loadAll();});
-}
-function refreshCredits(btn){
-  btn.disabled=true;msg('top-msg','正在刷新签到/状态…');
-  api('/api/wb-credits/refresh',{method:'POST'}).then(function(d){
-    var ok=0,bad=0;(d.results||[]).forEach(function(r){r.ok?ok++:bad++;});
-    msg('top-msg','刷新完成：成功 '+ok+'，失败 '+bad,'ok');
-    loadAll();
-  }).catch(function(e){msg('top-msg','刷新失败: '+e.message,'bad');}).finally(function(){btn.disabled=false;});
-}
-function setPolling(){
-  api('/api/wb-polling',{method:'POST',body:JSON.stringify({enabled:document.getElementById('poll-on').checked,mode:document.getElementById('poll-mode').value})})
-    .then(function(){msg('top-msg','轮询设置已保存','ok');loadStatus();});
-}
-function addAccount(btn){
-  btn.disabled=true;msg('top-msg','正在创建登录会话…');
-  document.getElementById('login-box').innerHTML='';
-  api('/api/wb-auth/login-start',{method:'POST'}).then(function(d){
-    btn.disabled=false;
-    if(!d.success){msg('top-msg','创建登录会话失败','bad');return;}
-    STATE=d.state;
-    document.getElementById('login-box').innerHTML=
-      '<div class="linkbox"><b>1.</b> 点击链接并用 WorkBuddy 账号完成登录：<a href="'+esc(d.auth_url)+'" target="_blank" rel="noopener">'+esc(d.auth_url)+'</a><br>'
-      +'<b>2.</b> 登录成功后停留在页面几秒，本窗口会自动检测（有效期 '+Math.round((d.expires_in||600)/60)+' 分钟）<br>'
-      +'<span class="mut"><span class="spin"></span>等待授权中…（获取到明文 token 后自动加入账号池）</span></div>';
-    window.open(d.auth_url,'_blank');
-    var tries=0;
-    POLL=setInterval(function(){
-      tries++;
-      if(tries>150){clearInterval(POLL);POLL=null;msg('top-msg','等待超时，请重试','bad');return;}
-      api('/api/wb-auth/login-poll?state='+encodeURIComponent(STATE)).then(function(r){
-        if(r.status==='ok'){
-          clearInterval(POLL);POLL=null;
-          if(r.imported){msg('top-msg','✅ 账号「'+(r.nickname||r.uid)+'」已加入账号池','ok');}
-          else{msg('top-msg','登录成功但导入失败：'+(r.import_error||'未知'),'bad');}
-          document.getElementById('login-box').innerHTML='';
-          loadAll();
-        }else if(r.status==='error'){
-          clearInterval(POLL);POLL=null;
-          msg('top-msg','登录失败：['+(r.code||'')+'] '+(r.msg||''),'bad');
-        }
-      }).catch(function(){});
-    },3000);
-  }).catch(function(e){btn.disabled=false;msg('top-msg','发起登录失败: '+e.message,'bad');});
-}
-document.getElementById('acc-table').addEventListener('click',function(ev){
-  var t=ev.target;
-  if(!t||!t.closest)return;
-  var b=t.closest('button[data-act]');
-  if(!b)return;
-  var uid=b.getAttribute('data-uid')||'';
-  var act=b.getAttribute('data-act');
-  if(act==='toggle')toggleAcc(uid,b.getAttribute('data-on')==='1');
-  else if(act==='del')delAcc(uid,b.getAttribute('data-nick')||'');
-});
-loadAll();
-</script>
-</body>
-</html>
-"""
-
+from .wb_page import WB_PAGE_HTML  # wb-switch 同款管理页（wb_page.py）
 
 @app.get("/web/wb", response_class=HTMLResponse)
 async def wb_admin_page():
-    """WorkBuddy 账号池管理页（控制台 WorkBuddy 标签页内嵌）。"""
-    return HTMLResponse(_WB_PAGE_HTML)
+    """WorkBuddy 账号池管理页（wb-switch 同款 UI，控制台 WorkBuddy 标签页内嵌）。"""
+    return HTMLResponse(WB_PAGE_HTML)
 
 
 @app.get("/authorize", response_class=HTMLResponse)

@@ -1,13 +1,14 @@
-"""WorkBuddy 池调度：credit-priority 轮询 + 双后台协程（token 刷新 / 积分刷新）+ 熔断。"""
+"""WorkBuddy 池调度：credit-priority 轮询 + 三后台协程（token 刷新 / 积分刷新 / 自动签到）+ 熔断。"""
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import random
 import time
 from typing import Any, Optional
 
-from . import wb_client, wb_store
+from . import wb_client, wb_settings, wb_store
 
 logger = logging.getLogger("wb-polling")
 
@@ -17,6 +18,7 @@ TOKEN_SCAN_INTERVAL_S = float(os.environ.get("WB_TOKEN_SCAN_INTERVAL_S", "300"))
 
 _ROTATION_CURSOR = 0
 _TASKS: list[asyncio.Task] = []
+_CHECKIN_LAST_DATE = ""  # YYYY-MM-DD，当日已执行标记
 
 
 def _eligible(rec: dict[str, Any]) -> bool:
@@ -41,14 +43,25 @@ def _usable_now(rec: dict[str, Any]) -> bool:
     return _eligible(rec)
 
 
-def pick_account(exclude_uids: Optional[set[str]] = None) -> Optional[dict[str, Any]]:
-    """credit-priority：剩余积分降序（未知的排最后），同分按轮询游标。"""
+def pick_account(exclude_uids: Optional[set[str]] = None,
+                 variant: str = "cn") -> Optional[dict[str, Any]]:
+    """credit-priority：剩余积分降序（未知的排最后），同分按轮询游标。
+
+    variant="cn"/"ai" 按账号库 variant 字段过滤；"all" 不过滤。
+    """
     global _ROTATION_CURSOR
     exclude = exclude_uids or set()
     cfg = wb_store.polling_cfg()
     if not cfg.get("enabled", True):
         return None
-    pool = [r for r in wb_store.accounts() if _usable_now(r) and str(r.get("uid")) not in exclude]
+    want = wb_client.normalize_variant(variant)
+    pool = []
+    for r in wb_store.accounts():
+        if not _usable_now(r) or str(r.get("uid")) in exclude:
+            continue
+        if want != "all" and wb_client.normalize_variant(r.get("variant")) != want:
+            continue
+        pool.append(r)
     if not pool:
         return None
     if cfg.get("mode") == "credit-priority":
@@ -71,7 +84,9 @@ async def _token_refresher_loop() -> None:
     while True:
         try:
             now = time.time() * 1000
-            margin_ms = REFRESH_MARGIN_MIN * 60 * 1000
+            # 保活阈值可配置（天）：默认与 30 分钟取大者
+            margin_ms = max(REFRESH_MARGIN_MIN * 60 * 1000,
+                            float(wb_settings.get("keepalive_days", 2) or 0) * 86400000.0)
             for rec in wb_store.accounts():
                 if rec.get("needs_relogin") or not rec.get("model_enabled", True):
                     continue
@@ -117,11 +132,52 @@ async def _credits_refresher_loop() -> None:
         await asyncio.sleep(CREDITS_INTERVAL_MIN * 60)
 
 
+async def _auto_checkin_loop() -> None:
+    """每日自动签到：到达设置时间（含随机抖动）后对所有合格账号执行一次。"""
+    global _CHECKIN_LAST_DATE
+    while True:
+        try:
+            cfg = wb_settings.load()
+            today = time.strftime("%Y-%m-%d")
+            if cfg.get("auto_checkin") and _CHECKIN_LAST_DATE != today:
+                parts = str(cfg.get("auto_checkin_time") or "09:00").split(":")
+                target_min = int(parts[0]) * 60 + int(parts[1])
+                jitter = random.uniform(0, max(0, int(cfg.get("auto_checkin_jitter_min", 30) or 0)))
+                lt = time.localtime()
+                now_min = lt.tm_hour * 60 + lt.tm_min
+                if now_min >= target_min + jitter:
+                    blacklist = set(cfg.get("auto_checkin_uids") or [])
+                    done = 0
+                    for rec in wb_store.accounts():
+                        if rec.get("needs_relogin") or not rec.get("model_enabled", True):
+                            continue
+                        if not rec.get("auto_checkin", True) or str(rec.get("uid")) in blacklist:
+                            continue
+                        try:
+                            await wb_client.ensure_fresh(rec)
+                            result = await wb_client.checkin(rec)
+                            done += 1
+                            logger.info("wb-checkin: uid=%s ok=%s already=%s msg=%s",
+                                        rec.get("uid"), result.get("ok"),
+                                        result.get("already"), result.get("msg"))
+                        except wb_client.WbAccountDead as exc:
+                            logger.warning("wb-checkin: dead uid=%s (%s)", rec.get("uid"), exc)
+                        except Exception as exc:
+                            logger.error("wb-checkin: error uid=%s (%s)", rec.get("uid"), exc)
+                        await asyncio.sleep(2.0)
+                    _CHECKIN_LAST_DATE = today
+                    logger.info("wb-checkin: daily run finished (%d accounts)", done)
+        except Exception as exc:
+            logger.error("wb-checkin: loop error %s", exc)
+        await asyncio.sleep(60)
+
+
 def start_background() -> None:
     if _TASKS:
         return
     _TASKS.append(asyncio.create_task(_token_refresher_loop()))
     _TASKS.append(asyncio.create_task(_credits_refresher_loop()))
+    _TASKS.append(asyncio.create_task(_auto_checkin_loop()))
     logger.info("wb-polling: background loops started (%d accounts)", len(wb_store.accounts()))
 
 
