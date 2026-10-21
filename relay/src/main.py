@@ -1667,7 +1667,7 @@ html.theme-anim *, html.theme-anim *::before, html.theme-anim *::after {
   .manual-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 820px) {
-  .app { grid-template-columns: minmax(0, 1fr); }
+  .app { display: block; }
   .sidebar { position: sticky; top: 0; z-index: 10; height: auto; flex-direction: row; align-items: center; border-right: none; border-bottom: 2px solid var(--edge); overflow: visible; }
   .brand { padding: 10px 12px; border-bottom: none; }
   .brand-block { display: none; }
@@ -12867,7 +12867,10 @@ async def v1_index(request: Request):
 
 @app.get("/web/login", response_class=HTMLResponse)
 async def web_login():
-    return _web_login_html()
+    # 控制台 HTML 内嵌全部前端代码，且无版本化资源指纹——Safari（尤其 iOS）
+    # 对无缓存头的 HTML 会启发式复用旧副本，升级后用户可能长期跑在旧前端上
+    # （「改了却没生效」）。每次都回源校验，代价只是一次 193KB 的条件请求。
+    return HTMLResponse(_web_login_html(), headers={"Cache-Control": "no-cache"})
 
 
 def _helper_generated_at() -> str:
