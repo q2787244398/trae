@@ -18,6 +18,7 @@
 | `docs/模型与积分消耗分析.md` | 17 个模型的能力/消耗档位、缓存对积分的影响、常见错误码 |
 | `docs/断网问题排查.md` | 云电脑/虚机环境间歇性断网的根因排查（DHCP 重启、Tailscale 干预） |
 | `docs/relay-故障诊断.md` | 4008 / 4010 等错误码的诊断结论与修复步骤 |
+| `docs/Hub-IP黑名单功能说明.md` | workbuddy2api-hub 的来源 IP 记录与黑名单拦截（实现 / 使用 / 验证） |
 | `docs/源码分析.md` | 上游源码架构与安全评估 |
 | `docs/越狱插件方案.md` | iOS 端分析与 Theos 插件设计 |
 | `ios-tweak/TraeCreds/` | dylib 插件工程（Tweak.xm / Makefile / control） |
