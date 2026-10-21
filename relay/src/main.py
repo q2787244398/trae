@@ -1130,6 +1130,9 @@ body {
   transition: background .2s, color .2s;
 }
 code, .mono { font-family: var(--mono); font-size: 12px; }
+/* html 也要有主题背景：iOS Safari 的滚动锚定在 tab 高度骤变后可能把滚动位置
+   留在负值/错误处，顶部露出无背景的 html——默认透黑，看起来像「凭空的黑块」。 */
+html { background: var(--bg); }
 svg { width: 16px; height: 16px; flex-shrink: 0; }
 a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--edge); outline-offset: 2px; }
@@ -2455,6 +2458,12 @@ function switchTab(name){{
     if(on){{ var t=document.getElementById('page-title'); if(t) t.textContent=b.getAttribute('data-title')||''; }}
   }});
   document.querySelectorAll('.tab-page').forEach(function(p){{ p.classList.toggle('active', p.getAttribute('data-page')===name); }});
+  // iOS Safari 滚动锚定 bug：tab 内容高度骤变（尤其 Hub 看板内嵌 540px+ 的
+  // iframe）时，WebKit 可能把滚动位置留在错误值——顶部露出 html 背景的黑块
+  // 与残留间距，看起来像「点击菜单后多了高和间距」。桌面 Chrome/Edge 的锚定
+  // 行为不同所以没事。窄屏（手机）切 tab 一律回顶：顶栏是 sticky 的、本来
+  // 就在视野里，回顶是最自然的恢复；桌面保留原滚动位置。
+  try{{ if (window.matchMedia('(max-width: 820px)').matches) window.scrollTo(0, 0); }}catch(e){{}}
   try{{ history.replaceState(null,'','#'+name); }}catch(e){{}}
   syncSelection();
   if(name==='overview') refreshOverview();
