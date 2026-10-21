@@ -707,6 +707,23 @@ def _decode_request_content(raw: bytes, content_encoding: str) -> bytes:
     return decoded
 
 
+def _strip_tre_prefix(model: Any) -> Any:
+    """还原 WorkBuddy 客户端发出的 ``TRE·`` 展示前缀（本地补丁 9）。
+
+    WorkBuddy 自定义模型用前缀区分两个网关（Hub 用 ``Hub·``、relay 用
+    ``TRE·``）。请求到达 relay 时 ``model`` 字段仍带 ``TRE·``，需在此剥离
+    为真实模型名才能命中上游；其它来源的模型名原样返回。
+    """
+
+    if isinstance(model, str):
+        stripped = model.strip()
+        if stripped.startswith("TRE·"):
+            real = stripped[4:]
+            logger.info("alias: tre-prefix %s -> %s", stripped, real)
+            return real
+    return model
+
+
 async def _read_json_body(
     request: Request,
     *,
@@ -762,6 +779,9 @@ async def _read_json_body(
             "JSON body must be an object", raw_bytes=raw_size
         )
     body = dict(payload)
+    # WorkBuddy 前缀剥离（本地补丁 9）：TRE·模型名 -> 真实模型名。
+    if isinstance(body.get("model"), str):
+        body["model"] = _strip_tre_prefix(body["model"])
     logger.info(
         "request body received id=%s endpoint=%s bytes=%d decoded_bytes=%d content_type=%s "
         "content_encoding=%s keys=%s",
