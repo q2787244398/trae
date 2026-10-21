@@ -640,7 +640,7 @@ PUBLIC_PATHS = {
     "/api/ide/v1/custom_model_connectivity_check",
     "/v1/custom_model/connectivity",
 }
-PUBLIC_PATH_PREFIXES = ("/api/checkin", "/api/accounts")
+PUBLIC_PATH_PREFIXES = ("/api/checkin", "/api/accounts", "/api/wb")
 WEB_LOGIN_SCRIPT = Path(__file__).resolve().parent.parent / "web_login.py"
 
 
@@ -1166,6 +1166,29 @@ a { color: var(--accent); }
   border-radius: 0 3px 3px 0; background: var(--side-accent);
 }
 .sidebar-foot { margin-top: auto; padding: 12px 16px 16px; border-top: 1px solid var(--side-line); font-size: 11px; color: var(--side-muted); display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); }
+
+/* Sidebar collapse toggle: 折叠后只剩图标列（56px），文字隐藏，网格列宽同步收窄。
+   只作用于桌面布局（>820px）；窄屏侧栏变顶栏，折叠无意义，按钮一并隐藏。 */
+.app { transition: grid-template-columns .18s ease; }
+.side-toggle {
+  margin-left: auto; width: 24px; height: 24px; flex-shrink: 0;
+  display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--side-line); border-radius: 8px;
+  background: transparent; color: var(--side-muted); cursor: pointer;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.side-toggle:hover { color: var(--side-accent); background: var(--side-hover); border-color: var(--edge); }
+.side-toggle svg { width: 13px; height: 13px; transition: transform .2s ease; }
+body.side-collapsed .side-toggle svg { transform: rotate(180deg); }
+body.side-collapsed .app { grid-template-columns: 56px minmax(0, 1fr); }
+body.side-collapsed .brand { flex-direction: column; gap: 6px; padding: 10px 4px 8px; }
+body.side-collapsed .brand-block { display: none; }
+body.side-collapsed .nav-list { padding: 12px 6px; }
+body.side-collapsed .nav-item { padding: 0; justify-content: center; gap: 0; }
+body.side-collapsed .nav-item span { display: none; }
+body.side-collapsed .nav-item.active::before { left: -7px; }
+body.side-collapsed .sidebar-foot { display: none; }
+@media (max-width: 820px) { .side-toggle { display: none; } }
 
 .main { min-width: 0; display: flex; flex-direction: column; }
 .topbar {
@@ -1978,14 +2001,16 @@ def _web_login_html() -> str:
       <h1>Trae CN Relay</h1>
       <span class="brand-sub">控制台</span>
     </div>
+    <button class="side-toggle" onclick="toggleSidebar()" title="折叠/展开侧边栏" aria-label="折叠或展开侧边栏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></svg></button>
   </div>
   <nav class="nav-list" role="tablist" aria-label="功能导航">
-    <button class="nav-item active" role="tab" data-tab="overview" data-title="概览" onclick="switchTab('overview')">{ic['layout-dashboard']}<span>概览</span></button>
-    <button class="nav-item" role="tab" data-tab="accounts" data-title="账号与签到" onclick="switchTab('accounts')">{ic['users']}<span>账号与签到</span></button>
-    <button class="nav-item" role="tab" data-tab="usage" data-title="消费记录" onclick="switchTab('usage')">{ic['receipt']}<span>消费记录</span></button>
-    <button class="nav-item" role="tab" data-tab="settings" data-title="轮询与设置" onclick="switchTab('settings')">{ic['sliders-horizontal']}<span>轮询与设置</span></button>
-    <button class="nav-item" role="tab" data-tab="models" data-title="模型测试" onclick="switchTab('models')">{ic['activity']}<span>模型测试</span></button>
-    <button class="nav-item" role="tab" data-tab="model-list" data-title="模型列表" onclick="switchTab('model-list')">{ic['list']}<span>模型列表</span></button>
+    <button class="nav-item active" role="tab" data-tab="overview" data-title="概览" title="概览" onclick="switchTab('overview')">{ic['layout-dashboard']}<span>概览</span></button>
+    <button class="nav-item" role="tab" data-tab="accounts" data-title="账号与签到" title="账号与签到" onclick="switchTab('accounts')">{ic['users']}<span>账号与签到</span></button>
+    <button class="nav-item" role="tab" data-tab="usage" data-title="消费记录" title="消费记录" onclick="switchTab('usage')">{ic['receipt']}<span>消费记录</span></button>
+    <button class="nav-item" role="tab" data-tab="settings" data-title="轮询与设置" title="轮询与设置" onclick="switchTab('settings')">{ic['sliders-horizontal']}<span>轮询与设置</span></button>
+    <button class="nav-item" role="tab" data-tab="models" data-title="模型测试" title="模型测试" onclick="switchTab('models')">{ic['activity']}<span>模型测试</span></button>
+    <button class="nav-item" role="tab" data-tab="model-list" data-title="模型列表" title="模型列表" onclick="switchTab('model-list')">{ic['list']}<span>模型列表</span></button>
+    <button class="nav-item" role="tab" data-tab="hub" data-title="Hub 看板" title="Hub 看板" onclick="switchTab('hub')">{ic['zap']}<span>Hub 看板</span></button>
   </nav>
   <div class="sidebar-foot"><span>Trae2api-cn</span><span>v{APP_VERSION}</span></div>
 </aside>
@@ -2384,6 +2409,18 @@ def _web_login_html() -> str:
 </div>
 </div>
 
+<div class="tab-page" data-page="hub">
+<iframe id="hub-frame" title="workbuddy2api-hub 看板" style="width:100%;height:calc(100vh - 150px);min-height:540px;border:0;border-radius:14px"></iframe>
+<script>
+(function(){{
+  var f=document.getElementById('hub-frame'); if(!f) return;
+  var h=location.hostname;
+  var base=(h==='127.0.0.1'||h==='localhost')?'http://127.0.0.1:8788':'https://'+h+':8443';
+  f.src=base+'/?pwd=hrd3xPcaoqsAVYPu';
+}})();
+</script>
+</div>
+
 </div>
 </main>
 </div>
@@ -2400,6 +2437,12 @@ function applyTheme(theme,persist){{
   }}
 }}
 applyTheme(document.documentElement.getAttribute('data-theme')||'light',false);
+function toggleSidebar(){{
+  var collapsed = document.body.classList.toggle('side-collapsed');
+  try{{ localStorage.setItem('relay-side-collapsed', collapsed ? '1' : '0'); }}catch(e){{}}
+  syncSelection();
+}}
+try{{ if (localStorage.getItem('relay-side-collapsed') === '1') document.body.classList.add('side-collapsed'); }}catch(e){{}}
 function switchTab(name){{
   document.querySelectorAll('.nav-item').forEach(function(b){{
     var on=b.getAttribute('data-tab')===name;
@@ -12457,14 +12500,65 @@ async def status():
     }
 
 
-@app.get("/v1/models")
-async def models(request: Request):
+_MODEL_BRAND_CASE = {
+    "deepseek": "DeepSeek", "kimi": "Kimi", "gpt": "GPT", "aws": "AWS",
+    "sdk": "SDK", "grok": "Grok", "doubao": "Doubao", "glm": "GLM",
+    "gemini": "Gemini", "llama": "Llama", "qwen": "Qwen", "o": "o",
+}
+
+
+def _pretty_model_name(mid: str) -> str:
+    """模型 id → 展示名：去掉 wb-/wbi- 前缀，分隔符转空格，版本号保持原样。"""
+    name = re.sub(r"^(wbi|wb)-", "", mid)
+    name = name.replace("_", " ").replace("-", " ")
+    out = []
+    for w in name.split():
+        lw = w.lower()
+        if lw in _MODEL_BRAND_CASE:
+            out.append(_MODEL_BRAND_CASE[lw])
+        elif re.fullmatch(r"v\d+(\.\d+)*", w):
+            out.append(w[:1].upper() + w[1:])
+        elif w and w[0].isalpha():
+            out.append(w[0].upper() + w[1:])
+        else:
+            out.append(w)
+    return " ".join(out)
+
+
+def _tag_model_platform(m: dict) -> dict:
+    """给模型对象附加 platform / display_name 分类字段（纯附加，协议零影响）。"""
+    m = dict(m)
+    mid = str(m.get("id") or "")
+    m["platform"] = "trae"
+    m["display_name"] = (_pretty_model_name(mid) + " · Trae").strip()
+    return m
+
+
+async def _models_payload(request: Request):
+    """Trae 池模型目录（OpenAI 协议 + platform/display_name 附加字段）。"""
     force = request.query_params.get("refresh", "").lower() in ("1", "true", "yes")
     try:
         items = await trae_client.get_models(force=force)
     except Exception as e:
         return _openai_error(502, str(e), "api_error")
-    return {"object": "list", "data": items}
+    items = [_tag_model_platform(m) for m in items]
+    groups: dict[str, list[str]] = {}
+    for m in items:
+        groups.setdefault(str(m.get("platform") or "trae"), []).append(str(m.get("id")))
+    # 顶层 groups 为分类索引；data 仍为 OpenAI 协议要求的平铺数组
+    return {"object": "list", "data": items, "groups": groups, "pool": "trae"}
+
+
+@app.get("/v1/models")
+async def models(request: Request):
+    return await _models_payload(request)
+
+
+@app.get("/models")
+async def models_compat(request: Request):
+    """Unversioned discovery alias used by some TraeWork model forms."""
+
+    return await _models_payload(request)
 
 
 @app.get("/models")
@@ -12901,6 +12995,7 @@ async def web_login_helper_info(request: Request, relay_param: str = Query("", a
             "revision": str(os.environ.get("RELAY_BUILD_REVISION") or "local"),
         }
     )
+
 
 
 @app.get("/authorize", response_class=HTMLResponse)
