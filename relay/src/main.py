@@ -1168,7 +1168,9 @@ a { color: var(--accent); }
 .sidebar-foot { margin-top: auto; padding: 12px 16px 16px; border-top: 1px solid var(--side-line); font-size: 11px; color: var(--side-muted); display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); }
 
 /* Sidebar collapse toggle: 折叠后只剩图标列（56px），文字隐藏，网格列宽同步收窄。
-   只作用于桌面布局（>820px）；窄屏侧栏变顶栏，折叠无意义，按钮一并隐藏。 */
+   折叠只作用于桌面布局（>820px）：窄屏侧栏是顶部横条、本就不占纵向空间，
+   折叠无意义——所有 body.side-collapsed 规则必须锁进桌面媒体查询，否则会把
+   窄屏的单列布局破坏成 56px 两列，而按钮又是隐藏的，用户无法自救。 */
 .app { transition: grid-template-columns .18s ease; }
 .side-toggle {
   margin-left: auto; width: 24px; height: 24px; flex-shrink: 0;
@@ -1179,15 +1181,17 @@ a { color: var(--accent); }
 }
 .side-toggle:hover { color: var(--side-accent); background: var(--side-hover); border-color: var(--edge); }
 .side-toggle svg { width: 13px; height: 13px; transition: transform .2s ease; }
-body.side-collapsed .side-toggle svg { transform: rotate(180deg); }
-body.side-collapsed .app { grid-template-columns: 56px minmax(0, 1fr); }
-body.side-collapsed .brand { flex-direction: column; gap: 6px; padding: 10px 4px 8px; }
-body.side-collapsed .brand-block { display: none; }
-body.side-collapsed .nav-list { padding: 12px 6px; }
-body.side-collapsed .nav-item { padding: 0; justify-content: center; gap: 0; }
-body.side-collapsed .nav-item span { display: none; }
-body.side-collapsed .nav-item.active::before { left: -7px; }
-body.side-collapsed .sidebar-foot { display: none; }
+@media (min-width: 821px) {
+  body.side-collapsed .side-toggle svg { transform: rotate(180deg); }
+  body.side-collapsed .app { grid-template-columns: 56px minmax(0, 1fr); }
+  body.side-collapsed .brand { flex-direction: column; gap: 6px; padding: 10px 4px 8px; }
+  body.side-collapsed .brand-block { display: none; }
+  body.side-collapsed .nav-list { padding: 12px 6px; }
+  body.side-collapsed .nav-item { padding: 0; justify-content: center; gap: 0; }
+  body.side-collapsed .nav-item span { display: none; }
+  body.side-collapsed .nav-item.active::before { left: -7px; }
+  body.side-collapsed .sidebar-foot { display: none; }
+}
 @media (max-width: 820px) { .side-toggle { display: none; } }
 
 .main { min-width: 0; display: flex; flex-direction: column; }
