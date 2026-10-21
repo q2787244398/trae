@@ -12886,11 +12886,32 @@ async def v1_index(request: Request):
 # ---- Web login endpoints ----
 
 @app.get("/web/login", response_class=HTMLResponse)
-async def web_login():
-    # 控制台 HTML 内嵌全部前端代码，且无版本化资源指纹——Safari（尤其 iOS）
-    # 对无缓存头的 HTML 会启发式复用旧副本，升级后用户可能长期跑在旧前端上
-    # （「改了却没生效」）。每次都回源校验，代价只是一次 193KB 的条件请求。
-    return HTMLResponse(_web_login_html(), headers={"Cache-Control": "no-cache"})
+async def web_login(request: Request):
+    # 控制台 HTML 内嵌全部前端代码（约 193KB）且无版本化资源指纹。这里针对性
+    # 解决移动端访问慢，做了两件事：
+    #   1) gzip 压缩：HTML/CSS/JS 压缩率高，193KB 可降到约 35KB，显著缩短跨网传输
+    #      时间（电脑走 127.0.0.1 本地回环几乎无感，手机跨网传输是真正的瓶颈）。
+    #      仅压缩本静态文本页面，不碰 SSE 流式聊天响应。
+    #   2) ETag 条件缓存：内容未变时返回 304，浏览器直接用本地缓存，替代旧的一刀切
+    #      ``no-cache``（后者每次都要重新下载完整 HTML）。代码或账号状态变化 → ETag
+    #      变 → 重新下载；同时保留 no-cache，避免 Safari/iOS 对无缓存头 HTML 的
+    #      启发式复用旧副本（「改了却没生效」的老问题）。
+    content = _web_login_html()
+    raw = content.encode("utf-8")
+    etag = '"%s"' % hashlib.sha256(raw).hexdigest()
+    if request.headers.get("if-none-match") == etag:
+        return Response(
+            status_code=304,
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
+    headers = {"Cache-Control": "no-cache", "ETag": etag, "Vary": "Accept-Encoding"}
+    accept_encoding = request.headers.get("accept-encoding", "")
+    if "gzip" in accept_encoding.lower():
+        headers["Content-Encoding"] = "gzip"
+        body = gzip.compress(raw, compresslevel=6)
+    else:
+        body = raw
+    return Response(content=body, media_type="text/html", headers=headers)
 
 
 def _helper_generated_at() -> str:
