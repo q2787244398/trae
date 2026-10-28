@@ -19,6 +19,9 @@
 | `docs/断网问题排查.md` | 云电脑/虚机环境间歇性断网的根因排查（DHCP 重启、Tailscale 干预） |
 | `docs/relay-故障诊断.md` | 4008 / 4010 等错误码的诊断结论与修复步骤 |
 | `docs/Hub-IP黑名单功能说明.md` | workbuddy2api-hub 的来源 IP 记录与黑名单拦截（实现 / 使用 / 验证） |
+| `docs/Hub-1.8.0升级评估与操作手册.md` | Hub 1.7.33 → 1.8.0 冲突预检、风险矩阵、四阶段升级与回滚步骤 |
+| `docs/Hub-1.8.0升级执行报告.md` | 上述升级的实跑记录：影子实例验证、差异清单、回滚点、遗留事项 |
+| `docs/patches/hub-local-patches-archive.txt` | Hub 本地相对上游的全部 diff 存档（16 文件 / 48 hunk，仅人工比对用） |
 | `docs/源码分析.md` | 上游源码架构与安全评估 |
 | `docs/越狱插件方案.md` | iOS 端分析与 Theos 插件设计 |
 | `ios-tweak/TraeCreds/` | dylib 插件工程（Tweak.xm / Makefile / control） |

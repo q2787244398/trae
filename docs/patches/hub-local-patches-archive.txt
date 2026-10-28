@@ -1,0 +1,1285 @@
+# Hub 本地补丁全量存档（本地相对上游的全部 diff）
+
+统计：**16 个文件分节 / 48 个 hunk**
+
+> **这是存档，不是可 apply 的补丁文件。**
+> 格式为自定义分节：`=== 文件名 ===` + `@@ -a,b +c,d @@` 上下文，
+> 不含 `diff --git` 头、不含 index 行，**`git apply` / `patch -p1` 都会失败**。
+> 用途：人工比对、审计「本地相对上游改了哪些处」，以及在 v1.8.0 上重放时对照。
+> 重放方式见 `docs/Hub-1.8.0升级评估与操作手册.md` 阶段 0。
+
+---
+
+=== README.md ===
+@@ -22,7 +22,7 @@
+ This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
+ 
+ <p align="center">
+-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.7.33-2496ED?style=flat-square" alt="Version 1.7.33"></a>
++  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.8.0-2496ED?style=flat-square" alt="Version 1.8.0"></a>
+   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
+   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
+   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
+@@ -181,7 +181,7 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
+ - 211 个套件：157 个 Python + 54 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+ - 211 个套件：158 个 Python + 53 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+ - 211 个套件：157 个 Python + 54 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+-- 225 个套件：166 个 Python + 59 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
++- 226 个套件：167 个 Python + 59 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+ - 211 个套件：158 个 Python + 53 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+ - 211 个套件：157 个 Python + 54 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+ - 211 个套件：158 个 Python + 53 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+@@ -493,8 +493,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
+ 
+ <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+ 
+-- **v1.7.33 已于 2026-10-23 发布**：本版集成 #630、#632、#635、#638，并自本版起进入低频维护。完整变更与验证记录见 **[docs/CHANGELOG.md](docs/CHANGELOG.md#v173)**；下一版的改动继续写在本段。
+-
++- **v1.8.0 发布**：汇总 v1.7.33 之后的 #640、#642、#643、#645/#647，并补齐 #578、#618、#625 的发布记录。完整变更、验证范围与已知限制见 **[docs/CHANGELOG.md](docs/CHANGELOG.md#v180)**；下一版的改动继续写在本段。
+ - **修正 CN 专属模型判定，并给 OpenCode 写入真实上下文上限**（#618 / #625）：`minimax-` 曾被当成整个模型家族的 CN 专属前缀，于是国际版也提供的 `minimax-m3.1-flash` 被本地 400 拦下。现在只保留确定的 CN 独占项（`deepseek-v4-pro*` 与显式 `minimax-m3`），同族其他模型按出口实际目录判断。OpenCode 一键配置此前只写空的模型条目，客户端只能回落到自己的 200k 默认值；现在把网关目录中的 `context_window` / `max_output` 写进 `limit.context` / `limit.output`，没有规格的条目仍保持空对象。新增回归覆盖。 / Narrow the China-only model gate and give OpenCode the real context limit (#618 / #625): `minimax-` used to mark the whole family as CN-exclusive, so the globally served `minimax-m3.1-flash` was refused locally with a 400. Only the confirmed China-only entries remain (`deepseek-v4-pro*` and the explicit `minimax-m3`); other members of the family follow the actual catalogue of the selected exit. OpenCode's one-click config used to write empty model entries, so it fell back to its own 200k default; the gateway's catalogue `context_window` / `max_output` now go into `limit.context` / `limit.output`, while entries without specs stay empty objects. Regression coverage added.
+ - **流式回复在真实静默期发送 SSE 心跳**（#578）：上游思考期间可能长时间一个字节都不发，而客户端会把静默误判为断流；只在每次阻塞读之前检查心跳，恰好无法覆盖它。Chat、Responses 与 Anthropic Messages 三条流式路径现在共用后台 `SSEHeartbeat`：每 15 秒无写入就发送合法的 `: keepalive` 注释帧，与业务帧共用锁，保证不会截断 JSON；响应正常时不会多插帧，流结束后线程立即停止。新增 `tests/_test_stream_keepalive.py`（9 项，含读线程阻塞期间仍收到心跳与并发写入完整性），并复跑流式 id、usage 帧、断流错误帧与重试套件。 / Keep SSE streams alive through real upstream silence (#578): while the model is thinking the upstream may send nothing for longer than the client's idle window, and checking a heartbeat only before the next blocking read cannot cover that gap. Chat, Responses and Anthropic Messages now share a background `SSEHeartbeat`: after 15 idle seconds it writes a valid `: keepalive` comment frame under the same lock as application writes, so JSON frames cannot be split; responsive streams gain no extra frames and the thread stops as soon as the stream ends. Added `tests/_test_stream_keepalive.py` (9 checks, including heartbeat delivery while the reader is blocked and write integrity under contention), and re-ran the stream id, usage-frame, abort-frame and retry suites.
+ 
+@@ -586,7 +585,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
+ - **DSH 一键配置放宽限流重试，修掉「对话到一半链接中断」**：WorkBuddy 的 429 冷却通常约一分钟，而 DSH 的默认 `retryPolicy` 是 `normal` / 最多 5 次 / 退避 500ms 起翻倍、封顶 10s——加起来不到 16 秒就放弃，冷却还没结束回合就以 `RATE_LIMIT` 失败。一键配置现在给 `wb-proxy` 单独写 `retryPolicy: {mode: normal, maxRetries: 8, backoff: {initialDelayMs: 2000, maxDelayMs: 30000, jitterRatio: 0.1}}`（合计约 2 分半），只影响 `wb-proxy`，其它 provider 仍用默认策略；字段与取值按 `@deepseek-ai/dsh-llm` 的 `RetryPolicySchema`。已经接入过的机器重新点一次「一键配置」即可补上这段（幂等），重启 DSH 生效。
+   DSH's default per-provider retry policy (normal, at most 5 retries, 500ms→10s backoff, under 16 seconds in total) gives up before WorkBuddy's ~60s rate-limit cooldown ends, so the turn dies with `RATE_LIMIT` — which the user sees as the conversation breaking mid-flight. The one-click config now writes a wider `retryPolicy` for `wb-proxy` only (8 retries, 2s initial delay, 30s cap, ~2.5 minutes in total); other providers keep the default policy. Field names and bounds follow `@deepseek-ai/dsh-llm`'s `RetryPolicySchema`. Re-running the one-click config on an already-integrated machine adds it idempotently, and a DSH restart applies it.
+ 
+-已发布版本的完整记录（v1.4.5 ~ v1.7.33，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
++已发布版本的完整记录（v1.4.5 ~ v1.8.0，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
+ 
+ ## 七、致谢与引用声明 (Credits & References)
+ 
+
+=== dashboard.html ===
+@@ -2632,6 +2632,7 @@
+     '账号当日消费的积分达到该值后，只允许请求免费模型（目录中标记为 x0.00 的模型），需要花费积分的模型自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示关闭（默认）。': 'Once the credit spend of an account for the day reaches this, only free models are allowed (those marked x0.00 in the catalog) and models that cost credits switch to other accounts; it recovers after local midnight. 0 turns it off (default).',
+     '账号，之后相关请求都会走该账号': 'account; requests will then go through it',
+     '走网页通道': 'use the web channel',
++    '证书失败改走活跃上报': 'report activity when the certificate fails',
+     '活跃使用的模型': 'Model for the daily activity',
+     '(已指定)': '(set)',
+     '（免费 0.00x）': ' (free 0.00x)',
+@@ -3031,6 +3032,7 @@
+     "已启用：429 时自动切换出站身份": "已啟用：429 時自動切換出站身份",
+     "已启用：余额低于": "已啟用：餘額低於",
+     "已启用：国际版打卡走网页通道": "已啟用：國際版打卡走網頁通道",
++    "证书失败改走活跃上报": "憑證失敗改走活躍上報",
+     "失败重试": "失敗重試",
+     "最多尝试次数": "最多嘗試次數",
+     "首轮等待": "首輪等待",
+@@ -5154,6 +5156,11 @@ <h2 style="margin:0">国际版每日活跃打卡 <em id="setDailyChatWebState"><
+               <input id="setDailyChatWeb" type="checkbox" style="width:16px;height:16px">
+               走网页通道
+             </label>
++            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
++              <input id="setDailyChatActivityFallback" type="checkbox" style="width:16px;height:16px">
++              证书失败改走活跃上报
++              <em id="setDailyChatActivityFallbackState" style="font-style:normal;font-size:12px;color:var(--dim)"></em>
++            </label>
+           </div>
+         </div>
+ 
+@@ -11754,6 +11761,14 @@ <h2 id="creditsModalTitle">积分与套餐明细</h2>
+         dailyChatCatchupState.textContent = dailyChatCatchup ? '(已启用)' : '(关闭)';
+         dailyChatCatchupState.style.color = dailyChatCatchup ? 'var(--accent2)' : 'var(--dim)';
+       }
++      const dailyChatActivityFallback = data.daily_chat_web_fallback_activity === true;
++      const dailyChatActivityFallbackInput = document.getElementById('setDailyChatActivityFallback');
++      if(dailyChatActivityFallbackInput) dailyChatActivityFallbackInput.checked = dailyChatActivityFallback;
++      const dailyChatActivityFallbackState = document.getElementById('setDailyChatActivityFallbackState');
++      if(dailyChatActivityFallbackState){
++        dailyChatActivityFallbackState.textContent = dailyChatActivityFallback ? '(已启用)' : '(关闭)';
++        dailyChatActivityFallbackState.style.color = dailyChatActivityFallback ? 'var(--accent2)' : 'var(--dim)';
++      }
+       const dailyWebRandomPrompt = data.daily_chat_web_random_prompt === true;
+       const dailyWebRandomPromptInput = document.getElementById('setDailyChatRandomPrompt');
+       if(dailyWebRandomPromptInput) dailyWebRandomPromptInput.checked = dailyWebRandomPrompt;
+@@ -12803,6 +12818,7 @@ <h2 id="creditsModalTitle">积分与套餐明细</h2>
+   const concEl = document.getElementById('setDailyChatWebConcurrency');
+   const backoffEl = document.getElementById('setDailyChatWebRetryBackoff');
+   const catchupEl = document.getElementById('setDailyChatStartupCatchup');
++  const fallbackEl = document.getElementById('setDailyChatActivityFallback');
+   const payload = {
+     daily_chat_web: !!(webEl && webEl.checked),
+     daily_chat_models: DAILY_CHAT_MODEL_SELECTED.slice(),
+@@ -12811,6 +12827,7 @@ <h2 id="creditsModalTitle">积分与套餐明细</h2>
+     daily_chat_web_concurrency: Number((concEl && concEl.value) || 1),
+     daily_chat_web_retry_backoff: Number((backoffEl && backoffEl.value) || 0),
+     daily_chat_startup_catchup: !!(catchupEl && catchupEl.checked),
++    daily_chat_web_fallback_activity: !!(fallbackEl && fallbackEl.checked),
+     schedule: {daily_chat: DAILY_CHAT_TIMES_SELECTED.slice()}
+   };
+   if(btn) btn.disabled = true;
+@@ -12834,11 +12851,13 @@ <h2 id="creditsModalTitle">积分与套餐明细</h2>
+   const concEl = document.getElementById('setDailyChatWebConcurrency');
+   const backoffEl = document.getElementById('setDailyChatWebRetryBackoff');
+   const catchupEl = document.getElementById('setDailyChatStartupCatchup');
++  const fallbackEl = document.getElementById('setDailyChatActivityFallback');
+   if(budgetEl) budgetEl.value = '600';
+   if(turnEl) turnEl.value = '120';
+   if(concEl) concEl.value = '1';
+   if(backoffEl) backoffEl.value = '5';
+   if(catchupEl) catchupEl.checked = true;
++  if(fallbackEl) fallbackEl.checked = false;
+   renderDailyChatModelList([]);
+   renderDailyChatTimes([]);
+   if(btn) btn.disabled = true;
+@@ -12850,6 +12869,7 @@ <h2 id="creditsModalTitle">积分与套餐明细</h2>
+       daily_chat_web_concurrency: 1,
+       daily_chat_web_retry_backoff: 5,
+       daily_chat_startup_catchup: true,
++      daily_chat_web_fallback_activity: false,
+       schedule: {daily_chat: []}
+     });
+     toast('已恢复推荐值：随机两个时段、自动候选、预算 600 秒', 'ok');
+
+=== docs/CHANGELOG.md ===
+@@ -1,3 +1,22 @@
++## v1.8.0
++
++本版汇总 `v1.7.33` 之后的四个修复，并补记此前已进入发布页、但未写入仓库 CHANGELOG 的三项改动。套件 226 个（167 Python + 59 JS）。
++
++> **维护状态（2026-10-23）**：WorkBuddy 对非官方客户端的识别与拦截持续收紧，维护者近期工作压力增大，更新与 Issue / PR 处理将显著放缓。上游可能随时彻底收紧导致不可用；账号风控 / 限流 / 封禁风险由使用者自行承担。请优先使用官方客户端，不要使用主账号或商业转售。
++
++- **更新检查超时放宽到 10 秒**（#640）：Releases API 受限时，回退下载路径在代理出口实测需要 4.2～10 秒；旧的 5 秒上限会把本可成功的回退一起掐掉。现在两条路径各有 10 秒，失败仍按每日节流重试，不会挂住面板。
++- **stderr 日志通道不再阻塞请求线程**（#642）：请求线程只向 2000 行有界队列 `put_nowait()`，由单个守护线程负责真正写入；队列满时丢行并计数，首次和每 1000 行写一条 WARN 到看板日志。退出路径用 0.5 秒超时刷队列，`sys.stderr is None`（pythonw）直接跳过。日志内容、脱敏与看板顺序不变。
++- **桌面 chat 可选协议一致性**（#643）：设置进程环境 `WB_DESKTOP_CHAT_COMPAT=1` 后重启，仅桌面产品的 chat 去掉浏览器请求头，补齐 SDK runtime 元数据与 B3 parent span。默认关闭；CLI、VSCode、计费 REST、请求体、设备 token 与退避逻辑不变。参考 workbuddy2api-panel 的桌面报文对照，未独立复核原始抓包，不构成 TLS 指纹模拟或免封保证。
++- **国际版每日活跃证书失败降级**（#645 / #647）：ACP 沙箱域名由 EdgeOne 下发 `*.cdn.myqcloud.com` 通配证书，Python ssl 必然报 Hostname mismatch。国际版现在也能按 `www.workbuddy.ai` 调用 `POST /v2/report`，连登查询同样按账号出口选 base；设置页新增「证书失败改走活跃上报」，**默认关闭**。仅证书类错误可降级，沙箱未就绪、轮次超时、业务拒绝仍如实失败；回退上报被拒时保留当天未完成状态供下轮重试。
++- **补记 v1.7.31 发布内容**：恢复 `model_aliases` 映射并避免后台模型改写误伤显式选择（#617 / #619）；收窄 CN 专属模型判定（#618）；OpenCode 一键配置写入真实 `limit.context` / `limit.output`（#625）；Chat / Responses / Anthropic Messages 三条流式路径在真实静默期发送 SSE 心跳（#578）。
++
++验证：
++
++- 本地完整矩阵：`226 passed, 0 failed, 0 skipped`。
++- GitHub CI：Ubuntu 3.9、Ubuntu 3.12、Windows 3.12 与 revert guard 均通过。
++- 发布前补跑发布工程与资产套件、`py_compile`、`git diff --check` 与干净检出检查。
++- 本机没有真实账号池，**未执行网关到 WorkBuddy 上游的真实模型冒烟**；#645 的上游证书恢复与真实账号连登 `0 -> 1` 仍需部署方复测。
++
+ ## v1.7.33
+ 
+ 四个社区 PR 的集成版本，并自本版起进入低频维护。套件 225 个（166 Python + 59 JS）。
+
+=== tests/_test_daily_chat_activity_fallback.py ===
+@@ -0,0 +1,257 @@
++"""国际版每日活跃的证书失败降级（issue #645）。
++
++上游给网页通道分配的 ACP 沙箱域名（*.workbuddy.cloudagent-app.net）解析到腾讯云
++EdgeOne，边缘节点下发的是 *.cdn.myqcloud.com 通配证书，Python ssl 必然是 Hostname
++mismatch。这一轮重试永远不可能成功，而成长连登只需要一条 POST /v2/report 就能点亮。
++
++这里钉四件事：
++1. 国际版的活跃上报与连登查询都走它自己的 base（www.workbuddy.ai），不是国内 base；
++2. 网页腿证书校验失败且开关打开时，改走活跃上报并把当天算完成；
++3. 开关默认关，关着时行为与以前完全一致（仍如实报失败、不写 lastDailyChat）；
++4. 非证书类失败一律不降级，避免把「真的没跑完」也算成完成。
++
++Run with: python tests/run_all.py daily_chat_activity_fallback
++"""
++import json
++import os
++import sys
++import unittest
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
++_TMP = isolated_data_dirs("wb-daily-fallback-")
++
++import wb_accounts, wb_settings, wb_tasks  # noqa: E402
++
++UID = "5f3d1c02-0a51-4a0e-9a5f-2f3d6cd0b7a1"
++# 上游真实下发过的证书错误文本（见 issue #645 的报错原文）。
++TLS_ERROR = ("SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate "
++             "verify failed: Hostname mismatch, certificate is not valid for "
++             "'65225-2113853771288948736.workbuddy.cloudagent-app.net'. (_ssl.c:1016)")
++NON_TLS_ERROR = "会话在 120s 内没有跑完（状态=working）"
++
++
++def make_account(directory=None, realm="intl", uid=UID, **extra):
++    data = {"uid": uid, "realm": realm, "accessToken": "dummy-token",
++            "lastDailyChat": None}
++    data.update(extra)
++    acc = wb_accounts.Account(data)
++    if directory:
++        acc.path = os.path.join(directory, "acc-%s.json" % realm)
++    return acc
++
++
++def make_dir(name):
++    directory = os.path.join(_TMP.name, name)
++    os.makedirs(directory, exist_ok=True)
++    return directory
++
++
++class Response(object):
++    """最小可用的 urlopen 返回值：网页通道的每一次 GET/POST 都用它。"""
++
++    def __init__(self, payload):
++        self.payload = payload
++
++    def read(self, *_args):
++        return json.dumps(self.payload).encode("utf-8")
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *_args):
++        return False
++
++
++def web_stub():
++    """替换 urlopen：建会话 + 取沙箱 session + 查状态全部成功。"""
++    create = {"code": 0, "msg": "OK", "data": {"id": "2102411494602919936"}}
++    session = {"code": 0, "msg": "OK",
++               "data": {"link": "https://box.example/acp",
++                        "token": "sandbox-token",
++                        "sessionId": "2102411494602919936",
++                        "cwd": "/workspace"}}
++
++    def fake(req, **_kwargs):
++        if req.full_url.endswith("/session"):
++            return Response(session)
++        if req.full_url.endswith("/conversations/"):
++            return Response(create)
++        return Response({"code": 0, "msg": "OK",
++                         "data": {"status": "completed"}})
++
++    return fake
++
++
++class StubCase(unittest.TestCase):
++    """统一安装 urlopen / run_turn / 上报的打桩，测试结束自动还原。"""
++
++    def install(self, turn_error, report_ok=True, streak=3):
++        self.turns = []
++        self.reported = []
++        real_urlopen = wb_accounts.urlopen
++        real_turn = wb_accounts.wb_webagent.run_turn
++        real_events = wb_tasks.report_events
++        real_streak = wb_tasks.fetch_streak_days
++
++        def fake_turn(link, token, session_id, cwd, prompt, user_agent, **kwargs):
++            self.turns.append(kwargs.get("wait_seconds"))
++            return {"ok": False, "status": "working", "chunks": 0,
++                    "elapsed_ms": 10, "error": turn_error}
++
++        def fake_events(account, events, base=None):
++            self.reported.append({"uid": account.uid, "base": base})
++            return report_ok
++
++        wb_accounts.urlopen = web_stub()
++        wb_accounts.wb_webagent.run_turn = fake_turn
++        wb_tasks.report_events = fake_events
++        wb_tasks.fetch_streak_days = lambda account: streak
++        self.addCleanup(setattr, wb_accounts, "urlopen", real_urlopen)
++        self.addCleanup(setattr, wb_accounts.wb_webagent, "run_turn", real_turn)
++        self.addCleanup(setattr, wb_tasks, "report_events", real_events)
++        self.addCleanup(setattr, wb_tasks, "fetch_streak_days", real_streak)
++
++
++class TlsTextTests(unittest.TestCase):
++    def test_the_upstream_string_is_recognised(self):
++        """判据吃的是字符串：run_turn 只回文本，异常对象早就丢了。"""
++        self.assertTrue(wb_accounts.is_tls_verify_text(TLS_ERROR))
++
++    def test_other_failures_are_not_certificate_failures(self):
++        self.assertFalse(wb_accounts.is_tls_verify_text(NON_TLS_ERROR))
++        self.assertFalse(wb_accounts.is_tls_verify_text(""))
++        self.assertFalse(wb_accounts.is_tls_verify_text(None))
++
++    def test_the_known_markers_all_match(self):
++        for marker in ("certificate verify failed", "self-signed certificate",
++                       "unable to get local issuer certificate",
++                       "certificate has expired", "hostname mismatch"):
++            self.assertTrue(wb_accounts.is_tls_verify_text("X: " + marker), marker)
++
++
++class SwitchTests(unittest.TestCase):
++    def test_off_by_default(self):
++        """行为变更默认关：升级后线上语义不变。"""
++        directory = make_dir("switch-default")
++        self.assertFalse(wb_settings.daily_chat_web_fallback_activity(directory))
++
++    def test_round_trip(self):
++        directory = make_dir("switch-roundtrip")
++        self.assertTrue(wb_settings.set_daily_chat_web_fallback_activity(directory, True))
++        self.assertTrue(wb_settings.daily_chat_web_fallback_activity(directory))
++        self.assertFalse(wb_settings.set_daily_chat_web_fallback_activity(directory, False))
++        self.assertFalse(wb_settings.daily_chat_web_fallback_activity(directory))
++
++    def test_a_hand_edited_json_does_not_turn_it_on(self):
++        """只有字面 true 才算打开，字符串 "true" 之类的手改值不生效。"""
++        directory = make_dir("switch-hand-edit")
++        with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
++            json.dump({"daily_chat_web_fallback_activity": "true"}, fh)
++        self.assertFalse(wb_settings.daily_chat_web_fallback_activity(directory))
++
++
++class IntlBaseTests(unittest.TestCase):
++    def test_streak_days_use_the_account_realm_base(self):
++        """国际版必须查 www.workbuddy.ai 的 growth；打国内 base 只会拿不到天数。"""
++        seen = []
++        real = wb_accounts.urlopen
++
++        def fake(req, **_kwargs):
++            seen.append(req.full_url)
++            return Response({"code": 0, "data": {"streak": {"days": 4}}})
++
++        wb_accounts.urlopen = fake
++        try:
++            days = wb_tasks.fetch_streak_days(make_account(realm="intl"))
++            self.assertEqual(days, 4)
++            self.assertEqual(seen, ["https://www.workbuddy.ai/activity/growth/streak"])
++            seen[:] = []
++            days = wb_tasks.fetch_streak_days(make_account(realm="cn"))
++            self.assertEqual(days, 4)
++            self.assertTrue(seen[0].startswith(wb_tasks.CHAT_BASE), seen)
++            self.assertTrue(seen[0].endswith("/activity/growth/streak"), seen)
++        finally:
++            wb_accounts.urlopen = real
++
++
++class FallbackTests(StubCase):
++    def test_a_certificate_failure_falls_back_when_the_switch_is_on(self):
++        """开关打开：证书失败改走活跃上报，当天算完成，不再报整轮失败。"""
++        directory = make_dir("fallback-on")
++        wb_settings.set_daily_chat_web_fallback_activity(directory, True)
++        acc = make_account(directory)
++        self.install(TLS_ERROR)
++
++        res = acc.daily_chat(web=True)
++
++        self.assertTrue(res.get("ok"), res)
++        self.assertNotIn("网页通道失败", res.get("error") or "")
++        self.assertIn("回退", res.get("msg") or "")
++        self.assertEqual(len(self.reported), 1)
++        self.assertEqual(self.reported[0]["uid"], UID)
++        self.assertIn("workbuddy.ai", self.reported[0]["base"])
++        self.assertTrue(res.get("web_fallback", {}).get("ok"), res)
++        self.assertTrue(acc.last_daily_chat)          # 当天算做过
++        self.assertFalse(acc.can_daily_chat())        # 巡检不再重复跑
++
++    def test_the_switch_being_off_keeps_the_old_verdict(self):
++        """默认关：证书失败仍然如实报失败，也不写 lastDailyChat。"""
++        directory = make_dir("fallback-off")
++        acc = make_account(directory)
++        self.install(TLS_ERROR)
++
++        res = acc.daily_chat(web=True)
++
++        self.assertFalse(res.get("ok"), res)
++        self.assertIn("网页通道失败", res.get("msg") or "")
++        self.assertIn("网页通道失败", res.get("error") or "")
++        self.assertEqual(self.reported, [])
++        self.assertNotIn("web_fallback", res)
++        self.assertIsNone(acc.last_daily_chat)
++        self.assertTrue(acc.can_daily_chat())         # 下一轮巡检还会重试
++
++    def test_a_non_certificate_failure_never_falls_back(self):
++        """开关打开也不该把「真的没跑完」当成完成：那会让 30 积分静默丢掉。"""
++        directory = make_dir("fallback-non-tls")
++        wb_settings.set_daily_chat_web_fallback_activity(directory, True)
++        acc = make_account(directory)
++        self.install(NON_TLS_ERROR)
++
++        res = acc.daily_chat(web=True)
++
++        self.assertFalse(res.get("ok"), res)
++        self.assertIn("网页通道失败", res.get("msg") or "")
++        self.assertEqual(self.reported, [])
++        self.assertIsNone(acc.last_daily_chat)
++
++    def test_a_rejected_report_leaves_the_day_open(self):
++        """降级也要看结果：上报被上游拒绝时仍然算失败，好让下一轮重试。"""
++        directory = make_dir("fallback-rejected")
++        wb_settings.set_daily_chat_web_fallback_activity(directory, True)
++        acc = make_account(directory)
++        self.install(TLS_ERROR, report_ok=False)
++
++        res = acc.daily_chat(web=True)
++
++        self.assertFalse(res.get("ok"), res)
++        self.assertIn("网页通道失败", res.get("msg") or "")
++        self.assertEqual(len(self.reported), 1)
++        self.assertIsNone(acc.last_daily_chat)
++        self.assertTrue(acc.can_daily_chat())
++
++    def test_a_cn_account_still_keeps_the_desktop_only_path(self):
++        """国内版不走网页腿，这条升级对它没有影响。"""
++        directory = make_dir("fallback-cn")
++        wb_settings.set_daily_chat_web_fallback_activity(directory, True)
++        acc = make_account(directory, realm="cn")
++        self.install(TLS_ERROR)
++
++        res = acc.daily_chat(web=True)
++
++        self.assertFalse(res.get("ok"), res)
++        self.assertIn("international", res.get("error") or "")
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+
+=== tests/_test_dead_stderr_keeps_serving.py ===
+@@ -1,18 +1,33 @@
+-"""启动它的终端被回收后，被记日志的端点必须还能答（stderr 裸写事故回归）。
++"""stderr 的两种坏形态都不能打死服务：读端消失（会抛异常）、读端不消费（只阻塞）。
+ 
+     python tests/_test_dead_stderr_keeps_serving.py
+ 
+ `send_response()` 会先走 log_request -> log_message -> log()。log() 曾经裸写
+-sys.stderr：一旦 stderr 的读端消失（启动网关的那个终端/管道被回收），写就抛
+-OSError，而位置在**响应头发出之前**——客户端只看到连接被空关，一条访问日志也不留。
+-最难发现的是 `log_message` 静默白名单里的端点照常被答，于是进程活着、端口在听、
+-`/health` 绿，业务接口 100% 不可用（2026-10-19 线上事故实测指纹）。
++sys.stderr，于是日志通道的形态直接决定业务死活，而两种形态失败得还不一样：
++
++1. **读端消失**（启动网关的终端 / 管道被回收）：写抛 OSError，位置同样在响应头
++   发出之前 —— 客户端只看到连接被空关，一条访问日志也不留。`#489` 的 try/except
++   盖住的就是这一种。
++2. **读端还在、但没人消费**（后台任务、服务管理器、`| tee` 的消费端已退出、智能体
++   runner 拉了 stderr=PIPE 却不读）：写满约 64KB 后 `write()` 永久阻塞，且**不抛
++   异常** —— try/except 观察不到阻塞，所以 `#489` 覆盖不到（`#642`）。请求线程因此
++   停在「还没发出响应头」的位置，除静默白名单（/health、/realm、/panel/status）外的
++   端点全部挂死。
++
++两种形态的共同指纹：进程活着、端口在听、`/health` 绿，业务接口 100% 不可用。
++现在写 stderr 的活由单个守护线程承担（有界队列 + 丢弃计数），请求线程只入队，
++所以下面三个场景都必须「照常应答 / 写不阻塞请求线程」：
++
++- 形态一：读端被关掉（抛异常那一种）；
++- 形态二：真网关 + 没人读的管道，端点必须照常答。v1.7.33 上实测第 54 个请求卡死
++  （Windows 匿名管道缓冲约 4KB，一次 /v1/models 的访问日志约 55 字节），具体序号随该机
++  的缓冲与日志长度变化；判据是「一个请求都不许卡住」，不是「卡在第几个」。
++- 形态三：进程内钉住真正的不变量 —— **stderr 的写发生在哪条线程**。同步写在调用者
++  线程里，那条线程堵住就是请求堵住；写在后台线程里，堵住也只是那条线程堵住。这一条与
++  操作系统、缓冲大小都无关，未修的版本必然失败。
+ 
+-本套件把子进程 stderr 管道的读端关掉来复现那一种状态，再断言：
+-免日志的三个端点与被记日志的三个端点**都必须拿到 HTTP 状态行**，且进程仍在。
+ 判据是"有没有响应"，不是"响应对不对"——无凭据的网关对 /v1/models 返回 502 也算通过。
+-
+-用一个临时 accounts/usage 与备用端口起真服务，不碰网络、不需要凭据、不动真实账号。
++用临时 accounts/usage 与备用端口起真服务，不碰网络、不需要凭据、不动真实账号。
+ """
+ 
+ import os
+@@ -70,22 +85,23 @@ def answered(port, path, timeout=15):
+     return True, head
+ 
+ 
+-work = tempfile.mkdtemp(prefix="wb-dead-stderr-")
+-store = os.path.join(work, "accounts")
+-usage = os.path.join(work, "usage")
+-os.makedirs(store, exist_ok=True)
+-os.makedirs(usage, exist_ok=True)
+-port = life.free_port()
+-
+-# stderr 必须是管道：后面要在本进程里关掉它的读端，才复现得出发端 OSError
+-proc = life.spawn_managed(
+-    [PY, os.path.join(ROOT, "wb_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
+-     "--accounts-dir", store],
+-    cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+-    env=dict(os.environ, WB_PROXY_USAGE_DIR=usage))
++def spawn_gateway(stderr):
++    """起一个真网关（临时 accounts/usage，备用端口），stderr 交给调用方决定形态。"""
++    work = tempfile.mkdtemp(prefix="wb-dead-stderr-")
++    store = os.path.join(work, "accounts")
++    usage = os.path.join(work, "usage")
++    os.makedirs(store, exist_ok=True)
++    os.makedirs(usage, exist_ok=True)
++    port = life.free_port()
++    proc = life.spawn_managed(
++        [PY, os.path.join(ROOT, "wb_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
++         "--accounts-dir", store],
++        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=stderr,
++        env=dict(os.environ, WB_PROXY_USAGE_DIR=usage))
++    return proc, port, work
+ 
+ 
+-def wait_ready():
++def wait_ready(proc, port):
+     for _ in range(60):
+         time.sleep(0.5)
+         ok, detail = answered(port, "/health", timeout=2)
+@@ -96,8 +112,30 @@ def wait_ready():
+     return False
+ 
+ 
++def spam_logged_endpoint(port, attempts, timeout=5):
++    """连续打会写访问日志的端点。返回 (第一个没有应答的序号, 细节)；全答则 (None, "")。"""
++    for i in range(1, attempts + 1):
++        ok, detail = answered(port, "/v1/models", timeout=timeout)
++        if not ok:
++            return i, detail
++    return None, ""
++
++
++def cleanup(work, proc):
++    life.stop_managed(proc)
++    import shutil
++    shutil.rmtree(work, ignore_errors=True)
++
++
++# --------------------------------------------------------------------------
++# 形态一：读端被关掉 —— 写会抛异常（#489）
++# --------------------------------------------------------------------------
++print("[形态一] stderr 读端被关掉（写会抛 OSError）")
++
++# stderr 必须是管道：后面要在本进程里关掉它的读端，才复现得出发端 OSError
++proc, port, work = spawn_gateway(subprocess.PIPE)
+ try:
+-    check("备用端口 %d 上的网关已就绪" % port, wait_ready())
++    check("备用端口 %d 上的网关已就绪" % port, wait_ready(proc, port))
+     if proc.poll() is None:
+         # 关键一步：父进程不再读这个管道
+         try:
+@@ -115,9 +153,90 @@ def wait_ready():
+         check("进程没有因为日志写失败而退出", proc.poll() is None,
+               "exit=%s" % proc.poll())
+ finally:
+-    life.stop_managed(proc)
+-    import shutil
+-    shutil.rmtree(work, ignore_errors=True)
++    cleanup(work, proc)
++
++
++# --------------------------------------------------------------------------
++# 形态二：读端开着、但从不读 —— 写会永久阻塞且不抛异常（#642）
++# --------------------------------------------------------------------------
++print()
++print("[形态二] stderr 是「没人读的管道」（写会阻塞，不抛异常）")
++
++# 每条约 1.2KB 访问日志，Windows 匿名管道缓冲约 64KB —— 给足 3 倍余量，
++# 确保未修的版本一定会在中途卡住，而修好的版本一个请求都不许卡。
++ATTEMPTS = 600
++
++read_fd, write_fd = os.pipe()
++proc, port, work = spawn_gateway(write_fd)
++os.close(write_fd)          # 父进程只留读端，且从不 read() —— 正是要复现的形态
++try:
++    check("备用端口 %d 上的网关已就绪（stderr = 没人读的管道）" % port, wait_ready(proc, port))
++    if proc.poll() is None:
++        blocked_at, detail = spam_logged_endpoint(port, ATTEMPTS)
++        check("连续 %d 个会写访问日志的请求全部有应答" % ATTEMPTS, blocked_at is None,
++              "第 %d 个请求先卡住: %s" % (blocked_at, detail) if blocked_at else "")
++        for path in ("/v1/models", "/", "/health", "/panel/status"):
++            ok, why = answered(port, path, timeout=6)
++            check("管道仍没人读时 %s 仍有响应" % path, ok, why)
++        check("进程没有因为 stderr 写阻塞而退出", proc.poll() is None,
++              "exit=%s" % proc.poll())
++finally:
++    try:
++        os.close(read_fd)    # 放开写端，免得清理时陪着一起等
++    except Exception:
++        pass
++    cleanup(work, proc)
++
++# --------------------------------------------------------------------------
++# 形态三：进程内 —— stderr 的写入必须发生在后台线程，而不是发请求的那条线程
++# --------------------------------------------------------------------------
++print()
++print("[形态三] 进程内：stderr 由后台写线程承担，请求线程只入队")
++
++unit_dir = tempfile.mkdtemp(prefix="wb-logwriter-")
++os.environ["ACCOUNTS_DIR"] = unit_dir            # 不碰真实账号
++os.environ["WB_PROXY_USAGE_DIR"] = unit_dir
++sys.path.insert(0, ROOT)
++import threading                                 # noqa: E402
++import wb_proxy                                  # noqa: E402  (真网关的 log() 实现)
++
++
++class RecordingStream(object):
++    """只记录「谁写的、写了什么」的 stderr —— 不阻塞，用来判断写发生在哪条线程。"""
++
++    def __init__(self):
++        self.writes = []
++
++    def write(self, text):
++        self.writes.append((threading.current_thread().name, text))
++        return len(text)
++
++    def flush(self):
++        pass
++
++
++recorder = RecordingStream()
++saved_stderr = sys.stderr
++try:
++    wb_proxy._LOG_STREAM_CLOSED = False          # 从「通道是好的」这个状态开始
++    sys.stderr = recorder
++    wb_proxy.log("形态三：这一行必须由后台写线程落下去")
++    flusher = getattr(wb_proxy, "flush_log_channel", None)
++    if flusher is not None:
++        flusher(2.0)                             # 等它真的写下去，避免读到「还没写」
++finally:
++    sys.stderr = saved_stderr
++
++writers = sorted({name for name, _ in recorder.writes})
++caller = threading.current_thread().name
++check("stderr 的写入发生在后台线程（%s），不是调用 log() 的线程" % (", ".join(writers) or "无"),
++      writers and caller not in writers,
++      "写入线程: %s —— 写在调用者线程里，那条线程一卡就是请求一卡" % (", ".join(writers) or "无"))
++check("这一行确实落到了 stderr", any("形态三" in text for _, text in recorder.writes),
++      "共 %d 次写入" % len(recorder.writes))
++
++import shutil                                    # noqa: E402
++shutil.rmtree(unit_dir, ignore_errors=True)
+ 
+ print()
+ print("SUMMARY: PASS=%d FAIL=%d" % (PASS, FAIL))
+
+=== tests/_test_identity_versions.py ===
+@@ -8,10 +8,12 @@
+ import sys
+ import tempfile
+ import unittest
++from unittest import mock
+ 
+ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import wb_identity
++import wb_accounts
+ import wb_proxy
+ import wb_settings
+ 
+@@ -139,5 +141,93 @@ def test_default_panel_password_saves_and_applies(self):
+         self.assertEqual(wb_identity.desktop_version("cn"), "9.9.9")
+ 
+ 
++class DesktopChatProfileTests(unittest.TestCase):
++    def setUp(self):
++        self.env = mock.patch.dict(os.environ, {}, clear=False)
++        self.env.start()
++        os.environ.pop("WB_DESKTOP_CHAT_COMPAT", None)
++        wb_identity.configure_versions({})
++        self.token = mock.patch.object(wb_accounts.Account, "_device_token", return_value="")
++        self.token.start()
++        self.addCleanup(self.env.stop)
++        self.addCleanup(self.token.stop)
++        self.addCleanup(wb_identity.configure_versions, {})
++
++    def account(self, product="workbuddy", realm="cn"):
++        return wb_accounts.Account({"uid": "desktop-fixture", "accessToken": "fixture",
++                                    "product": product, "realm": realm}, path=None)
++
++    def test_default_retains_legacy_profile(self):
++        headers = self.account().headers()
++        self.assertIn("Origin", headers)
++        self.assertNotIn("x-stainless-runtime", headers)
++        self.assertNotIn("X-B3-ParentSpanId", headers)
++
++    def test_only_explicit_one_enables_profile(self):
++        for value in ("0", "false", "true", "yes", ""):
++            with self.subTest(value=value):
++                os.environ["WB_DESKTOP_CHAT_COMPAT"] = value
++                self.assertFalse(wb_identity.desktop_chat_compat_enabled())
++        os.environ["WB_DESKTOP_CHAT_COMPAT"] = "1"
++        self.assertTrue(wb_identity.desktop_chat_compat_enabled())
++
++    def test_desktop_realms_use_sdk_not_browser_headers(self):
++        os.environ["WB_DESKTOP_CHAT_COMPAT"] = "1"
++        for realm in ("cn", "intl"):
++            with self.subTest(realm=realm):
++                headers = self.account(realm=realm).headers()
++                self.assertEqual(headers["Accept"], "application/json")
++                self.assertEqual(headers["Authorization"], "Bearer fixture")
++                self.assertEqual(headers["X-User-Id"], "desktop-fixture")
++                for name in ("Origin", "Referer", "Accept-Language", "X-Requested-With",
++                             "X-CodeBuddy-Request", "X-Machine-ID", "X-Session-ID"):
++                    self.assertNotIn(name, headers)
++
++    def test_sdk_headers_respect_existing_runtime_overrides(self):
++        os.environ.update(WB_DESKTOP_CHAT_COMPAT="1", WB_IDENTITY_OS="Linux",
++                          WB_IDENTITY_ARCH="arm64")
++        wb_identity.configure_versions({"sdk": "9.1.0", "node": "v23.0.0"})
++        headers = self.account().headers()
++        for name, value in {"lang": "js", "package-version": "9.1.0", "os": "Linux",
++                            "arch": "arm64", "runtime": "node", "runtime-version": "v23.0.0",
++                            "retry-count": "0"}.items():
++            self.assertEqual(headers["x-stainless-" + name], value)
++        self.assertNotIn("x-stainless-timeout", headers)
++
++    def test_b3_relationships_and_parent_are_consistent(self):
++        os.environ["WB_DESKTOP_CHAT_COMPAT"] = "1"
++        headers = self.account().headers()
++        trace, span, sampled, parent = headers["b3"].split("-")
++        self.assertEqual(headers["X-B3-TraceId"], trace)
++        self.assertEqual(headers["X-B3-SpanId"], span)
++        self.assertEqual(headers["X-B3-ParentSpanId"], parent)
++        self.assertEqual((len(trace), len(span), len(parent), sampled), (32, 16, 16, "1"))
++        self.assertEqual(headers["traceparent"], "00-" + trace + "-" + span + "-01")
++
++    def test_other_products_and_billing_are_unchanged(self):
++        stable = ("Accept", "Origin", "Referer", "Accept-Language", "X-Requested-With",
++                  "User-Agent", "x-stainless-runtime", "x-stainless-timeout", "X-IDE-Type")
++        for product, purpose in (("cli", "chat"), ("vscode", "chat"), ("workbuddy", "billing")):
++            with self.subTest(product=product, purpose=purpose):
++                acc = self.account(product)
++                os.environ.pop("WB_DESKTOP_CHAT_COMPAT", None)
++                before = acc.headers(purpose=purpose)
++                os.environ["WB_DESKTOP_CHAT_COMPAT"] = "1"
++                after = acc.headers(purpose=purpose)
++                self.assertEqual({k: before.get(k) for k in stable},
++                                 {k: after.get(k) for k in stable})
++
++    def test_missing_device_token_is_not_invented(self):
++        os.environ["WB_DESKTOP_CHAT_COMPAT"] = "1"
++        self.assertNotIn("X-Device-Token", self.account().headers())
++        self.assertNotIn("X-Device-Token-Error", self.account().headers())
++
++    def test_real_device_token_preserves_realm_boundary(self):
++        os.environ["WB_DESKTOP_CHAT_COMPAT"] = "1"
++        with mock.patch.object(wb_accounts.Account, "_device_token", return_value="real-fixture"):
++            self.assertEqual(self.account().headers()["X-Device-Token"], "real-fixture")
++            self.assertNotIn("X-Device-Token", self.account(realm="intl").headers())
++
++
+ if __name__ == "__main__":
+     unittest.main(verbosity=2)
+
+=== tests/_test_nickname_privacy.py ===
+@@ -244,6 +244,9 @@ def test_stderr_is_masked_too(self):
+         with mock.patch.object(sys, "stderr", stream):
+             wb_proxy.log("[任务福利] 账号 [%s] 网页通道打卡: OK" % PHONE,
+                          tag="tasks")
++            # 写 stderr 由后台线程承担（#642 之前的写法会在请求线程里同步写）：
++            # 等这一行真正落下去再断言，否则读到的是「还没写」的空串。
++            wb_proxy.flush_log_channel(1.0)
+         written = stream.getvalue()
+         self.assertNotIn(PHONE, written)
+         self.assertIn(PHONE_MASKED, written)
+
+=== tests/_test_settings_update_ui.js ===
+@@ -303,6 +303,7 @@ const posts = () => calls.filter(c => c.method === 'POST');
+   element('setDailyChatWebConcurrency').value = '2';
+   element('setDailyChatWebRetryBackoff').value = '7';
+   element('setDailyChatStartupCatchup').checked = false;
++  element('setDailyChatActivityFallback').checked = true;
+   await api.saveDailyChatModule({disabled: false});
+   await settled();
+   let moduleSave = posts().filter(c => c.url === '/settings/save');
+@@ -313,6 +314,8 @@ const posts = () => calls.filter(c => c.method === 'POST');
+   check('提交并发数与建会话退避', body.daily_chat_web_concurrency === 2 &&
+         body.daily_chat_web_retry_backoff === 7, JSON.stringify(body));
+   check('提交启动补跑开关', body.daily_chat_startup_catchup === false, JSON.stringify(body));
++  check('提交证书失败改走活跃上报开关',
++        body.daily_chat_web_fallback_activity === true, JSON.stringify(body));
+   check('候选序列与时段随模块一起提交',
+         Array.isArray(body.daily_chat_models) && body.schedule &&
+         Array.isArray(body.schedule.daily_chat), JSON.stringify(body));
+@@ -335,7 +338,11 @@ const posts = () => calls.filter(c => c.method === 'POST');
+         Array.isArray(resetBody.daily_chat_models) && resetBody.daily_chat_models.length === 0 &&
+         resetBody.schedule && resetBody.schedule.daily_chat.length === 0,
+         JSON.stringify(resetBody));
++  check('推荐值关闭证书失败改走活跃上报',
++        resetBody.daily_chat_web_fallback_activity === false, JSON.stringify(resetBody));
+   check('恢复推荐值后输入框写回 600', element('setDailyChatBudget').value === '600');
++  check('恢复推荐值后回退开关被取消勾选',
++        element('setDailyChatActivityFallback').checked === false);
+ 
+   // 存失败时给出失败提示，不静默。
+   saveStatus = 500;
+
+=== tests/_test_streak_report.py ===
+@@ -1,9 +1,9 @@
+-"""国内版每日对话活跃上报与连登（issue #250 / 连续打卡）。
++"""每日对话活跃上报与连登（issue #250 / 连续打卡，issue #645 加入国际版）。
+ 
+ 包含行为级测试：
+-1. can_report_activity 判定：仅限 cn 账号，按本地日期闸门（当天做过则不重复）。
++1. can_report_activity 判定：cn 与 intl 都适用，按本地日期闸门（当天做过则不重复）。
+ 2. report_activity 行为：
+-   - 非 cn 账号直接拒绝；
++   - 非法 realm 直接拒绝；国际版按自己的 base（chat_base_url）上报；
+    - 构造 chat 事件上报并校验上游 code=0；
+    - 上报成功后更新 last_activity_report 并落盘；
+    - 只读读取 streak days 带回 msg / streak_days 结构；
+@@ -57,8 +57,12 @@ def test_can_report_activity_skips_enterprise(self):
+         self.assertFalse(res.get("ok"))
+         self.assertIn("enterprise", res.get("error", ""))
+ 
+-    def test_intl_account_never_reports(self):
++    def test_intl_account_can_report(self):
++        # issue #645：国际版也有 growth 连登（www.workbuddy.ai 的 /activity/growth/streak），
++        # 只是上报端点不同，所以它同样算「今天还没做过活跃上报」。
+         acc = make_account(realm="intl")
++        self.assertTrue(acc.can_report_activity(), acc.realm)
++        acc.last_activity_report = time.strftime("%Y-%m-%d %H:%M:%S")
+         self.assertFalse(acc.can_report_activity())
+ 
+     def test_cn_account_without_record_can_report(self):
+@@ -75,12 +79,42 @@ def test_cn_account_with_yesterday_record_can_report(self):
+ 
+ 
+ class ReportActivityTests(unittest.TestCase):
+-    def test_rejects_intl_realm(self):
+-        acc = make_account(realm="intl")
++    def test_rejects_unknown_realm(self):
++        acc = make_account(realm="other")
+         res = acc.report_activity()
+         self.assertFalse(res.get("ok"))
+         self.assertIn("only for CN", res.get("error", ""))
+ 
++    def test_intl_reports_against_its_own_base(self):
++        """国际版必须打到 www.workbuddy.ai；用国内 base 上报只会静默失败。"""
++        acc = make_account(uid="intl-base", realm="intl")
++        seen = []
++
++        def fake_report_events(account, events, base=None):
++            seen.append((account.uid, base))
++            return True
++
++        with mock.patch.object(wb_tasks, "report_events", fake_report_events), \
++             mock.patch.object(wb_tasks, "fetch_streak_days", return_value=3):
++            res = acc.report_activity()
++        self.assertTrue(res.get("ok"), res)
++        self.assertEqual(seen, [("intl-base", acc.chat_base_url())])
++        self.assertIn("workbuddy.ai", seen[0][1])
++
++    def test_cn_keeps_the_default_base(self):
++        acc = make_account(uid="cn-base", realm="cn")
++        seen = []
++
++        def fake_report_events(account, events, base=None):
++            seen.append(base)
++            return True
++
++        with mock.patch.object(wb_tasks, "report_events", fake_report_events), \
++             mock.patch.object(wb_tasks, "fetch_streak_days", return_value=None):
++            res = acc.report_activity()
++        self.assertTrue(res.get("ok"), res)
++        self.assertEqual(seen, [None])  # None 让 wb_tasks 走默认国内 base
++
+     def test_fails_when_report_events_rejected(self):
+         acc = make_account(realm="cn")
+         with mock.patch.object(wb_tasks, "report_events", return_value=False):
+
+=== wb_accounts.py ===
+@@ -203,6 +203,18 @@ def tls_verify_hint(exc=None):
+     return "%s 原始错误：%s" % (TLS_VERIFY_HINT, exc)
+ 
+ 
++def is_tls_verify_text(text):
++    """True when an already-stringified error carries a certificate failure.
++
++    wb_webagent.run_turn 把 live 的异常折成「<类型>: <消息>」文本，调用方拿不到
++    异常对象，所以 is_tls_verify_error 够不着它。标记表是同一份，只是换成判
++    字符串：网页通道沙箱入口证书挂掉（#645）走的正是这条路径。
++    """
++    if not text:
++        return False
++    return is_tls_verify_error(TLSVerifyError(str(text)))
++
++
+ def _retryable(exc):
+     """Transient network faults worth another attempt (TLS resets, timeouts, 5xx)."""
+     if is_tls_verify_error(exc):
+@@ -1263,7 +1275,7 @@ def public(self):
+             "lastActivityReport": self.last_activity_report,
+             "canCheckin": self.realm == "cn" and not self.uses_enterprise_billing(),
+             "canDailyChat": self.realm == "intl",
+-            "canReportActivity": (self.realm == "cn"
++            "canReportActivity": (self.realm in ("cn", "intl")
+                                   and not self.uses_enterprise_billing()),
+             "machineId": derive_id(self.uid, "machine"),
+             "sessionId": session_id(self.uid),
+@@ -1844,7 +1856,10 @@ def headers(self, purpose="chat", session_key=None, turn_request_id=None,
+             private_data=(wb_settings.identity_private_data(
+                 os.path.dirname(self.path)) if self.path else "auto"),
+         )
+-        if self.is_cli_identity():
++        if self.is_cli_identity() or (
++                self.product == wb_identity.PRODUCT_DESKTOP
++                and wb_identity.desktop_chat_compat_enabled()):
++            # Opt-in desktop chat uses the SDK profile, not the billing web profile.
+             # 官方 CLI 的 chat 请求由 OpenAI Node SDK 发出：浏览器头一个都没有
+             # （X-Requested-With 也没有），Accept 就是 application/json。
+             headers = {
+@@ -2013,8 +2028,11 @@ def can_daily_chat(self):
+         return not str(self.last_daily_chat).startswith(today_str)
+ 
+     def can_report_activity(self):
+-        """国内版每天一次的对话活跃上报（点亮 growth 连登）是否还没做过。"""
+-        if self.realm != "cn":
++        """每天一次的对话活跃上报（点亮 growth 连登）是否还没做过。
++
++        国内版与国际版都有这套成长体系，只是上报端点不同（见 report_activity）。
++        """
++        if self.realm not in ("cn", "intl"):
+             return False
+         if self.uses_enterprise_billing():
+             return False
+@@ -2629,6 +2647,22 @@ def _daily_chat_upstream(self, web=None):
+                     result["error"] = "网页通道失败：%s%s" % (res.get("error"), suffix)
+                     result["msg"] = "每日活跃对话未完成（网页通道失败：%s%s）" % (
+                         res.get("error"), suffix)
++                    # 沙箱入口证书校验失败（#645）不属于「这一轮没跑完」，重试同一轮
++                    # 永远不会成功；而成长连登只需要一条 POST /v2/report 就能点亮。
++                    # 开关打开时改走活跃上报，把当天算完成（默认关，行为不变）。
++                    fallback_on = (bool(self.path)
++                                   and wb_settings.daily_chat_web_fallback_activity(
++                                       os.path.dirname(self.path)))
++                    if fallback_on and is_tls_verify_text(res.get("error")):
++                        fb = self.report_activity()
++                        result["web_fallback"] = fb
++                        if fb.get("ok"):
++                            web_ok = True
++                            result["ok"] = True
++                            result.pop("error", None)
++                            result["msg"] = (
++                                "每日活跃对话：网页通道证书校验失败，已回退对话活跃上报（%s）"
++                                % (fb.get("msg") or ""))
+             # 只有真正计入官方「每日活跃」的网页通道成功了才算今天做过：网页腿失败时
+             # 若照写 lastDailyChat，当天后续巡检会直接跳过该账号，那天的 30/50 积分静默
+             # 丢掉且不再重试。web=False（没开网页通道）时维持原语义：桌面腿成功即算完成。
+@@ -2708,17 +2742,19 @@ def report_activity(self):
+         上游口径：必须带 userId，否则服务端 200 但静默丢弃；每号每天一次即可，
+         不做多时点高频上报（风控口径）。成功后记 lastActivityReport 并落盘，再读
+         一次 /activity/growth/streak 把连登天数带回去——读失败不影响上报本身的
+-        结论。只有国内版有这套成长体系，国际版直接拒绝。
++        结论。国内版与国际版都有这套成长体系，只是 base 不同：国际版走
++        chat_base_url()（www.workbuddy.ai），国内版走 wb_tasks 的默认国内 base。
+         """
+-        if self.realm != "cn":
+-            return {"ok": False, "error": "activity report is only for CN realm accounts"}
++        if self.realm not in ("cn", "intl"):
++            return {"ok": False, "error": "activity report is only for CN/Intl realm accounts"}
+         if self.is_api_key:
+             return {"ok": False, "error": "API key accounts have no activity programme"}
+         if self.is_enterprise():
+             return {"ok": False, "error": "enterprise accounts do not support activity report"}
+         import wb_tasks
+         event = wb_tasks.build_event(self, "chat")
+-        if not wb_tasks.report_events(self, [event]):
++        base = None if self.realm == "cn" else self.chat_base_url()
++        if not wb_tasks.report_events(self, [event], base=base):
+             return {"ok": False, "error": "活跃上报被上游拒绝（未返回 code=0）"}
+         self.last_activity_report = time.strftime("%Y-%m-%d %H:%M:%S")
+         if self.path and os.path.exists(os.path.dirname(self.path)):
+
+=== wb_identity.py ===
+@@ -115,6 +115,11 @@ def _identity_arch():
+         machine, machine or "x64")
+ 
+ 
++def desktop_chat_compat_enabled():
++    """Opt in to desktop chat headers without changing billing or other products."""
++    return os.environ.get("WB_DESKTOP_CHAT_COMPAT", "").strip() == "1"
++
++
+ def cli_stainless_headers():
+     """官方 OpenAI Node SDK 6.25.0 的 x-stainless-* 指纹头。"""
+     return {
+@@ -518,7 +523,16 @@ def build_identity_headers(product, realm, uid, token,
+             "X-Conversation-Message-ID": msg_id,
+             "X-Request-ID": msg_id,
+         }
+-        headers.update(trace_headers())
++        compat = desktop_chat_compat_enabled()
++        headers.update(trace_headers(with_parent=compat))
++        if compat:
++            # Desktop profile reported by workbuddy2api-panel's headers.go
++            # (CN 5.8.3 / intl 5.8.4); shared SDK values remain configurable.
++            # Not a claim that Python's TLS stack matches the official client.
++            sdk_headers = cli_stainless_headers()
++            # Desktop request timeout is not verified; do not copy CLI's budget.
++            sdk_headers.pop("x-stainless-timeout", None)
++            headers.update(sdk_headers)
+     elif product == PRODUCT_VSCODE:
+         # 官方 VSCode 扩展 4.12.39997873 的 chat 请求头（解包源码实锤）：
+         #   - 全局拦截器：UA / X-IDE-* / X-Product-Version（UserAgent +
+
+=== wb_proxy.py ===
+@@ -26,8 +26,10 @@
+ import ipaddress
+ from collections import deque
+ import re
++import atexit
+ import json
+ import os
++import queue
+ import random
+ # 单请求体上限。默认值从 50MB 收紧到 16MB，是「内存护栏」：body 先整体读成 bytes、
+ # 再 decode 成 str、再 json.loads 成对象，实测 50MB body 的 decode+parse 峰值约
+@@ -266,6 +268,10 @@ def _handler(event):
+                     sys.stdout.flush()
+                 except Exception:
+                     pass
++                try:
++                    flush_log_channel(0.5)   # 已入队的行尽力落盘，卡住也不拖延退出
++                except Exception:
++                    pass
+                 os._exit(0)
+             return False
+         handler = PHANDLER_ROUTINE(_handler)   # keep the callback referenced
+@@ -10197,6 +10203,8 @@ def runtime_settings_view():
+         "daily_chat_budget_max": wb_settings.DAILY_CHAT_BUDGET_MAX,
+         "daily_chat_startup_catchup":
+             wb_settings.daily_chat_startup_catchup(ACCOUNTS_DIR),
++        "daily_chat_web_fallback_activity":
++            wb_settings.daily_chat_web_fallback_activity(ACCOUNTS_DIR),
+         "local_web_tools": wb_settings.local_web_tools(ACCOUNTS_DIR),
+         "remaining_priority_enabled":
+             wb_settings.remaining_priority_enabled(ACCOUNTS_DIR),
+@@ -10232,7 +10240,7 @@ def runtime_settings_view():
+         "accounts_dir": ACCOUNTS_DIR,
+         "usage_dir": USAGE_DIR,
+         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
+-        "version": "1.7.33",
++        "version": "1.8.0",
+     }
+ def current_account():
+     """Account used for display purposes (health / usage summaries)."""
+@@ -10568,16 +10576,129 @@ def add_log_entry(msg, level=None, tag=None):
+         LOG_STORE.append(entry)
+     return entry
+ 
++# ---------------------------------------------------------------------------
++# stderr 日志通道：请求线程只入队，真正的 stderr 写入交给唯一的后台线程。
++#
++# #489 处理的是「写 stderr 会抛异常」（启动终端被回收 → OSError）。还有一种形态它
++# 盖不住：stderr 接到「有人建、没人读」的管道时，写满约 64KB 后 write() 会**永久
++# 阻塞且不抛异常**，try/except 拦不住。而 send_response() 会先调 log_request()，
++# 于是所有不在 log_message 静默白名单里的端点一起停摆，/health /realm /panel/status
++# 却照常 200 —— 外部看起来「服务健在、只有面板坏了」，实际请求线程全停在 log()。
++#
++# Request threads only enqueue; a single daemon thread owns stderr. If that write ever
++# blocks, only the writer parks: requests keep flowing and the queue drops lines (with a
++# counter surfaced through the panel log buffer) instead of wedging every endpoint.
++# ---------------------------------------------------------------------------
++_LOG_QUEUE_MAX = 2000
++_LOG_QUEUE = queue.Queue(maxsize=_LOG_QUEUE_MAX)
++_LOG_WRITER = None
++_LOG_WRITER_LOCK = threading.Lock()
++_LOG_DROPPED = 0
++_LOG_STREAM_CLOSED = False
++_LOG_SHUTTING_DOWN = False
++_LOG_ATEXIT_REGISTERED = False
++
++
++def _log_writer_loop():
++    """唯一的 stderr 写者：阻塞也只阻塞它自己（daemon，随进程退出）。"""
++    global _LOG_STREAM_CLOSED
++    while True:
++        line = _LOG_QUEUE.get()
++        try:
++            if line is None:
++                return
++            if _LOG_STREAM_CLOSED:
++                continue
++            stream = sys.stderr
++            if stream is None:
++                # pythonw / 无控制台时并不总是可写对象，别再逐行试
++                _LOG_STREAM_CLOSED = True
++                continue
++            try:
++                stream.write(line)
++                stream.flush()
++            except Exception:
++                # 读端消失 / 终端被回收：放弃控制台通道，buffer 与日志库照常
++                _LOG_STREAM_CLOSED = True
++        finally:
++            _LOG_QUEUE.task_done()
++
++
++def _ensure_log_writer():
++    global _LOG_WRITER, _LOG_ATEXIT_REGISTERED
++    writer = _LOG_WRITER
++    if writer is not None and writer.is_alive():
++        return writer
++    with _LOG_WRITER_LOCK:
++        if _LOG_WRITER is None or not _LOG_WRITER.is_alive():
++            worker = threading.Thread(target=_log_writer_loop, name="log-writer",
++                                      daemon=True)
++            worker.start()
++            _LOG_WRITER = worker
++            if not _LOG_ATEXIT_REGISTERED:
++                # 解释器退出前先让写线程收手。daemon 线程在 finalize 阶段还攥着
++                # stderr 的缓冲锁时，CPython 会以 `_enter_buffered_busy` 直接中止
++                # 进程 —— 套件里表现为「测试全 OK、退出码非零」，短命的 CLI 进程
++                # （例如 console_tail）也会踩到。实测：不加这一层，60 行日志后立刻
++                # 退出连续 6/6 次中止；加上后 10/10 干净退出。
++                atexit.register(_stop_log_writer)
++                _LOG_ATEXIT_REGISTERED = True
++    return _LOG_WRITER
++
++
++def _stop_log_writer(timeout=0.5):
++    """atexit：尽力写完已入队的行，再让写线程自己退出（不让它拖住 finalize）。"""
++    global _LOG_SHUTTING_DOWN
++    flush_log_channel(timeout)
++    _LOG_SHUTTING_DOWN = True
++    writer = _LOG_WRITER
++    if writer is None or not writer.is_alive():
++        return
++    try:
++        _LOG_QUEUE.put_nowait(None)          # 叫醒它：写线程见到 None 就返回
++    except queue.Full:
++        pass                                 # 队列满＝它正卡在写里，join 会超时
++    try:
++        writer.join(max(0.05, float(timeout)))
++    except Exception:
++        pass
++
++
++def flush_log_channel(timeout=0.5):
++    """退出前尽力把已入队的行写完；写卡住时最多等 timeout 秒，绝不为日志拖延退出。
++
++    判据用 `unfinished_tasks`（入队 +1、写完 -1）而不是 `empty()`：写线程 `get()`
++    取下最后一行后队列就已经空了，但它可能还在 `write()` 里 —— 退出时漏掉那一行
++    的正是这个窗口。卡住的管道同样只让这里等到 timeout。
++    """
++    try:
++        deadline = time.time() + max(0.0, float(timeout))
++    except (TypeError, ValueError):
++        return
++    while time.time() < deadline:
++        if _LOG_STREAM_CLOSED or not _LOG_QUEUE.unfinished_tasks:
++            return
++        time.sleep(0.01)
++
++
+ def log(msg, level=None, tag=None):
+-    # 控制台 stderr 与看板 buffer 同源脱敏；写失败一律吞掉。
+-    # 日志通道绝不能打死请求。send_response() 会先调 log_request()，所以 stderr 写
+-    # 失败一旦抛出，异常发生在响应头发出之前：客户端只看到连接被掐、日志库里一条
+-    # 不留，而 /health /realm /panel/status 因为在 log_message 静默白名单里照常
+-    # 200，看起来"服务健在"（2026-10-19 线上网关的启动终端被回收后实测只剩这
+-    # 三个端点能答，其余全部空响应）。
++    # 控制台 stderr 与看板 buffer 同源脱敏。写入交给后台线程（见 _log_writer_loop）：
++    # 队列满只丢行并计数，绝不在请求线程里阻塞，也绝不让日志通道打死请求。
++    global _LOG_DROPPED
++    if _LOG_SHUTTING_DOWN:
++        # 退出途中写线程已收手：只进 buffer / 日志库，不再往队列里放
++        add_log_entry(msg, level=level, tag=tag)
++        return
++    _ensure_log_writer()
++    line = f"[wb-proxy] {time.strftime('%H:%M:%S')} {_mask_text(str(msg))}\n"
+     try:
+-        sys.stderr.write(f"[wb-proxy] {time.strftime('%H:%M:%S')} {_mask_text(str(msg))}\n")
+-        sys.stderr.flush()
++        _LOG_QUEUE.put_nowait(line)
++    except queue.Full:
++        _LOG_DROPPED += 1
++        if _LOG_DROPPED == 1 or _LOG_DROPPED % 1000 == 0:
++            # 只进 buffer / 日志库，不再走 stderr：那条路已经堵住了
++            add_log_entry("stderr log channel is blocked; %d line(s) dropped so far"
++                          % _LOG_DROPPED, level="WARN", tag="system")
+     except Exception:
+         pass
+     add_log_entry(msg, level=level, tag=tag)
+@@ -18076,7 +18197,7 @@ def finish(self):
+             super().finish()
+         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+             pass
+-    server_version = "wb-proxy/1.7.33"
++    server_version = "wb-proxy/1.8.0"
+     def log_message(self, fmt, *args):
+         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
+         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
+@@ -18771,6 +18892,10 @@ def _bye():
+                 sys.stdout.flush()
+             except Exception:
+                 pass
++            try:
++                flush_log_channel(0.5)   # 已入队的行尽力落盘，卡住也不拖延退出
++            except Exception:
++                pass
+             os._exit(0)
+         threading.Thread(target=_bye, daemon=True).start()
+         return self._json(200, {"ok": True, "shutting_down": True})
+@@ -19890,6 +20015,14 @@ def _handle_settings_save(self):
+                     "invalid_request_error")
+             wb_settings.set_daily_chat_startup_catchup(ACCOUNTS_DIR, raw)
+             reply["daily_chat_startup_catchup"] = raw
++        if "daily_chat_web_fallback_activity" in payload:
++            raw = payload.get("daily_chat_web_fallback_activity")
++            if not isinstance(raw, bool):
++                return self._error(
++                    400, "daily_chat_web_fallback_activity must be true or false",
++                    "invalid_request_error")
++            wb_settings.set_daily_chat_web_fallback_activity(ACCOUNTS_DIR, raw)
++            reply["daily_chat_web_fallback_activity"] = raw
+         if "local_web_tools" in payload:
+             raw = payload.get("local_web_tools")
+             if not isinstance(raw, bool):
+
+=== wb_settings.py ===
+@@ -2386,6 +2386,7 @@ def set_daily_chat_web_concurrency(accounts_dir, value):
+ DAILY_CHAT_RANDOM_MINUTES = (5, 55)
+ DAILY_CHAT_RANDOM_KEY = "daily_chat_random"
+ DAILY_CHAT_STARTUP_CATCHUP_KEY = "daily_chat_startup_catchup"
++DAILY_CHAT_WEB_FALLBACK_ACTIVITY_KEY = "daily_chat_web_fallback_activity"
+ 
+ 
+ def _clean_models(value):
+@@ -2554,6 +2555,32 @@ def set_daily_chat_startup_catchup(accounts_dir, enabled):
+     return enabled
+ 
+ 
++def daily_chat_web_fallback_activity(accounts_dir):
++    """Whether a web-channel TLS failure falls back to the activity report.
++
++    Off unless the operator turns it on. The web channel is the only leg that
++    actually earns the daily reward, so its failure is reported as a failure -
++    otherwise the day looks done and the credits silently never arrive. The
++    exception is a certificate failure on the sandbox endpoint (#645): that is
++    an upstream/network configuration fault, retrying the same turn cannot
++    fix it, and leaving the whole day failed while the streak can be lit by a
++    plain POST /v2/report costs the operator the streak too. With this switch
++    on, a TLS failure on the web leg reports activity instead of failing the
++    round. Every other web failure keeps its old meaning.
++    """
++    return load(accounts_dir).get(DAILY_CHAT_WEB_FALLBACK_ACTIVITY_KEY) is True
++
++
++def set_daily_chat_web_fallback_activity(accounts_dir, enabled):
++    """Persist the web-leg fallback switch. Returns the stored boolean."""
++    enabled = bool(enabled)
++    with _lock:
++        data = load(accounts_dir)
++        data[DAILY_CHAT_WEB_FALLBACK_ACTIVITY_KEY] = enabled
++        save(accounts_dir, data)
++    return enabled
++
++
+ def local_web_tools(accounts_dir):
+     """Whether the gateway runs web_search / web_fetch calls itself.
+ 
+
+=== wb_tasks.py ===
+@@ -201,7 +201,9 @@ def fetch_streak_days(account):
+     失败返回 None，不发写请求。供对话活跃上报后回显连登天数使用。
+     """
+     try:
+-        req = urllib.request.Request(CHAT_BASE + "/activity/growth/streak",
++        # 成长体系国内国际都有，端点跟着身分走：国际版是 www.workbuddy.ai。
++        base = account.chat_base_url() if hasattr(account, "chat_base_url") else CHAT_BASE
++        req = urllib.request.Request(base + "/activity/growth/streak",
+                                      headers=account.headers("chat"))
+         with _accounts.urlopen(req, timeout=10, proxy=account.proxy) as resp:
+             d = json.loads(resp.read().decode("utf-8"))
+
+=== wb_updates.py ===
+@@ -52,7 +52,10 @@ def configured_repository():
+ # （模块头第 3 条）。
+ TOKEN_ENV = "GITHUB_TOKEN"
+ USER_AGENT = "wb2api-hub-update-check"
+-REQUEST_TIMEOUT = 5
++# 回退路径是 302 跳转 + 对象存储下载，代理出口下实测 4.2~10s；5s 会把
++# 本可成功的回退请求掐掉，两条路径全挂才报「更新检查失败」。10s 留足
++# 余量又不至于让坏响应挂住面板（检查本身有 24h 节流，失败下个窗口重试）。
++REQUEST_TIMEOUT = 10
+ # 一份 releases 文档几十 KB；给足余量但设上限，坏响应不能把内存拉满。
+ MAX_BODY = 2 * 1024 * 1024
+ 
+
+=== wrt/openwrt/workbuddy2api/Makefile ===
+@@ -20,7 +20,7 @@
+ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=workbuddy2api
+-PKG_VERSION:=1.7.33
++PKG_VERSION:=1.8.0
+ PKG_RELEASE:=1
+ 
+ PKG_LICENSE:=MIT
+
